@@ -22,24 +22,16 @@ import {
 } from "@/lib/notifications/slack";
 
 export async function POST(request: NextRequest) {
-    let owner = process.env.SENTINELQA_DEFAULT_OWNER ?? "";
-    let repo = process.env.SENTINELQA_DEFAULT_REPO ?? "";
-    let branch = process.env.SENTINELQA_DEFAULT_BRANCH ?? "main";
-    let target_url = process.env.SENTINELQA_TARGET_URL ?? "";
+    // Defaults from env, can be overridden by request body
+    const envOwner = process.env.SENTINELQA_DEFAULT_OWNER ?? "";
+    const envRepo = process.env.SENTINELQA_DEFAULT_REPO ?? "";
+    const envBranch = process.env.SENTINELQA_DEFAULT_BRANCH ?? "main";
+    const envTargetUrl = process.env.SENTINELQA_TARGET_URL ?? "";
 
-    try {
-        const body = await request.json().catch(() => ({}));
-        const overrides = body as { owner?: string; repo?: string; branch?: string; target_url?: string };
-        if (overrides.owner) owner = overrides.owner;
-        if (overrides.repo) repo = overrides.repo;
-        if (overrides.branch) branch = overrides.branch;
-        if (overrides.target_url) target_url = overrides.target_url;
-
-        const { github_token, github_mcp_mode = "npx" } = body;
-    let owner = "";
-    let repo = "";
-    let branch = "main";
-    let target_url = "";
+    let owner = envOwner;
+    let repo = envRepo;
+    let branch = envBranch;
+    let target_url = envTargetUrl;
     let slackChannel: string | undefined;
     let body: Record<string, unknown> = {};
 
@@ -53,26 +45,33 @@ export async function POST(request: NextRequest) {
             );
         }
 
-        ({
-            owner,
-            repo,
-            branch = "main",
-            target_url,
-        } = body as { owner: string; repo: string; branch?: string; target_url: string });
-
         const {
+            owner: bodyOwner,
+            repo: bodyRepo,
+            branch: bodyBranch,
+            target_url: bodyTargetUrl,
             github_token,
             github_mcp_mode = "docker",
             selected_pr,
             slack_channel,
             session_id,
         } = body as {
+            owner?: string;
+            repo?: string;
+            branch?: string;
+            target_url?: string;
             github_token?: string;
             github_mcp_mode?: "docker" | "npx";
             selected_pr?: { number?: number; title?: string; url?: string };
             slack_channel?: string;
             session_id?: string;
         };
+
+        // Apply overrides from body if present
+        if (bodyOwner) owner = bodyOwner;
+        if (bodyRepo) repo = bodyRepo;
+        if (bodyBranch) branch = bodyBranch;
+        if (bodyTargetUrl) target_url = bodyTargetUrl;
 
         slackChannel = slack_channel?.trim() || undefined;
 
