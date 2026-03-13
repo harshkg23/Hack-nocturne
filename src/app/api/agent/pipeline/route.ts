@@ -51,11 +51,13 @@ export async function POST(request: NextRequest) {
             github_mcp_mode = "docker",
             selected_pr,
             slack_channel,
+            session_id,
         } = body as {
             github_token?: string;
             github_mcp_mode?: "docker" | "npx";
             selected_pr?: { number?: number; title?: string; url?: string };
             slack_channel?: string;
+            session_id?: string;
         };
 
         slackChannel = slack_channel?.trim() || undefined;
@@ -82,6 +84,7 @@ export async function POST(request: NextRequest) {
             targetUrl: target_url,
             githubToken: github_token,
             githubMcpMode: github_mcp_mode,
+            sessionId: session_id,
         });
 
         const { codeContext, testPlan, results, courier, pr } =
