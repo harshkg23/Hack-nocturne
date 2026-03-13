@@ -257,7 +257,7 @@ function LoginForm({ callbackUrl }: { callbackUrl: string }) {
 
       <Field
         id="login-email"
-        label="Email address"
+        label="Email-Broken"
         type="email"
         placeholder="agent@sentinel.qa"
         icon={<Mail className="w-4 h-4" />}
@@ -298,7 +298,7 @@ function LoginForm({ callbackUrl }: { callbackUrl: string }) {
         ) : (
           <>
             <Play className="w-3.5 h-3.5" />
-            Sign In
+            Sign-In-Broken
           </>
         )}
       </Button>
