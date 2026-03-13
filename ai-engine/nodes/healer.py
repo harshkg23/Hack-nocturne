@@ -7,6 +7,7 @@ from typing import Any
 
 from graph.state import SentinelState
 from llm.client import get_healer_llm, get_provider, is_real_only_mode
+from memory.retriever import get_similar_past_fixes
 
 HEALER_SYSTEM_PROMPT = dedent(
     """
@@ -191,6 +192,25 @@ def _load_json_payload(content: str) -> dict[str, Any]:
 def healer_node(state: SentinelState) -> dict[str, object]:
     failures = _validate_input(state)
 
+    past_fixes = get_similar_past_fixes(
+        git_diff=state.get("git_diff", ""),
+        changed_files=state.get("changed_files", []),
+        failed_tests=failures,
+    )
+
+    if past_fixes:
+        rag_context_block = "\n\nPAST SIMILAR ISSUES RESOLVED BY THIS SYSTEM (use as reference, not as ground truth):\n"
+        for fix in past_fixes:
+            rag_context_block += (
+                f"\nRCA Type: {fix.get('rca_type', '')}\n"
+                f"Report: {fix.get('rca_report', '')}\n"
+                f"Applied Patch:\n{fix.get('proposed_patch', '')}\n"
+                f"Confidence at the time: {fix.get('confidence_score', '')}\n"
+                "---"
+            )
+    else:
+        rag_context_block = ""
+
     if state.get("force_mock"):
         return _mock_healer(state, failures)
 
@@ -222,7 +242,7 @@ def healer_node(state: SentinelState) -> dict[str, object]:
     try:
         response = llm.invoke(
             [
-                {"role": "system", "content": HEALER_SYSTEM_PROMPT},
+                {"role": "system", "content": HEALER_SYSTEM_PROMPT + rag_context_block},
                 {"role": "user", "content": user_prompt},
             ]
         )
