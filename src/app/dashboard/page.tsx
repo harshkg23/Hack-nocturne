@@ -45,6 +45,7 @@ import {
   Plug,
   FileText,
   CreditCard,
+  Rocket,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -766,6 +767,13 @@ function Sidebar({
             <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/50 px-3 pb-1">
               System
             </p>
+            <Link
+              href="/deployment"
+              className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-muted-foreground hover:text-orange-400 hover:bg-orange-500/10 transition-all"
+            >
+              <Rocket className="w-4 h-4" />
+              Canary Deploy
+            </Link>
             <Link
               href="/mcp-test"
               className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-muted-foreground hover:text-cyan-400 hover:bg-cyan-500/10 transition-all"

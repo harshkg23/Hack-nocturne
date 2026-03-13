@@ -1,0 +1,122 @@
+{
+  "$schema": "https://sentinelqa.dev/config-schema.json",
+  "version": "1.0.0",
+  "project": {
+    "name": "SentinelQA",
+    "description": "Autonomous Quality Engineering Platform"
+  },
+
+  "deployment": {
+    "strategy": "canary",
+    "environment": "minikube",
+    "namespace": "sentinelqa",
+
+    "canary": {
+      "initial_traffic_percent": 10,
+      "increment_percent": 20,
+      "max_traffic_percent": 100,
+      "evaluation_interval_seconds": 30,
+      "rollback_on_failure": true,
+      "auto_promote": false,
+      "promotion_criteria": {
+        "min_success_rate": 95,
+        "max_error_rate_percent": 5,
+        "max_p95_latency_ms": 500
+      }
+    },
+
+    "services": {
+      "sentinelqa-app": {
+        "enabled": true,
+        "image": "sentinelqa-app:latest",
+        "port": 3000,
+        "replicas": 2,
+        "monitor": true,
+        "health_check": "/api/health",
+        "sentinel_tests": true,
+        "bypass_tests": false,
+        "rollback_enabled": true
+      },
+      "ai-engine": {
+        "enabled": true,
+        "image": "sentinelqa-ai-engine:latest",
+        "port": 5000,
+        "replicas": 1,
+        "monitor": true,
+        "health_check": "/health",
+        "sentinel_tests": false,
+        "bypass_tests": true,
+        "rollback_enabled": true
+      },
+      "mongodb": {
+        "enabled": true,
+        "image": "mongo:7",
+        "port": 27017,
+        "replicas": 1,
+        "monitor": false,
+        "sentinel_tests": false,
+        "bypass_tests": true,
+        "rollback_enabled": false
+      }
+    }
+  },
+
+  "monitoring": {
+    "prometheus": {
+      "enabled": true,
+      "scrape_interval": "15s",
+      "port": 9090,
+      "retention": "7d",
+      "alert_rules": {
+        "high_error_rate": {
+          "threshold_percent": 5,
+          "duration": "2m",
+          "severity": "critical"
+        },
+        "high_latency": {
+          "threshold_ms": 500,
+          "percentile": "p95",
+          "duration": "3m",
+          "severity": "warning"
+        },
+        "high_memory": {
+          "threshold_percent": 85,
+          "duration": "5m",
+          "severity": "warning"
+        }
+      }
+    },
+    "grafana": {
+      "enabled": true,
+      "port": 3002,
+      "admin_password": "sentinelqa",
+      "dashboards": ["deployment-overview", "canary-analysis", "service-health"]
+    },
+    "node_exporter": {
+      "enabled": true,
+      "port": 9100
+    }
+  },
+
+  "notifications": {
+    "slack": {
+      "enabled": true,
+      "channel": "#sentinelqa-alerts",
+      "events": ["deployment_started", "canary_promoted", "rollback_triggered", "tests_failed", "tests_passed"]
+    },
+    "github": {
+      "enabled": true,
+      "create_issues_on_failure": true,
+      "create_pr_on_fix": true,
+      "labels": ["sentinelqa", "auto-fix"]
+    }
+  },
+
+  "developer_overrides": {
+    "allow_force_deploy": true,
+    "allow_skip_tests": true,
+    "allow_manual_rollback": true,
+    "require_approval_for_production": true,
+    "bypass_confidence_threshold": 0.5
+  }
+}
