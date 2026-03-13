@@ -7,7 +7,10 @@ class SentinelState(TypedDict, total=False):
     branch: str
     changed_files: list[str]
     git_diff: str
+    code_context: str
     target_url: str
+    trigger_type: str
+    commit_sha: str
 
     test_plan: str
     test_results: list[dict[str, Any]]

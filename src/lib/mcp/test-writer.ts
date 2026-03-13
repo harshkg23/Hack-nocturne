@@ -218,7 +218,8 @@ export function buildPRBody(
   files: GeneratedTestFile[],
   codeContextLength: number,
   healerResult?: HealerOnlyResult | null,
-  prOptions?: PRBodyOptions
+  prOptions?: PRBodyOptions,
+  postFixResults?: TestRunOutput | null
 ): string {
   const lines: string[] = [];
   const hasHealerFix = ((healerResult?.file_edits?.length ?? 0) > 0 || healerResult?.proposed_patch?.trim()) && (healerResult?.confidence_score ?? 0) > 0.5;
@@ -314,34 +315,83 @@ export function buildPRBody(
     }
   }
 
-  // Test Results summary
-  const passRate = results.total > 0 ? ((results.passed / results.total) * 100).toFixed(0) : "0";
-  lines.push(`### 📊 Test Results`);
-  lines.push(``);
-  lines.push(`| Metric | Value |`);
-  lines.push(`|--------|-------|`);
-  lines.push(`| Total Tests | ${results.total} |`);
-  lines.push(`| ✅ Passed | ${results.passed} |`);
-  lines.push(`| ❌ Failed | ${results.failed} |`);
-  lines.push(`| Pass Rate | ${passRate}% |`);
-  lines.push(`| Duration | ${results.duration_ms}ms |`);
-  lines.push(``);
+  // ── Post-fix verification results (if available) ──
+  if (postFixResults && hasHealerFix) {
+    const postPassRate = postFixResults.total > 0 ? ((postFixResults.passed / postFixResults.total) * 100).toFixed(0) : "0";
+    lines.push(`### ✅ Test Results (after fix)`);
+    lines.push(``);
+    lines.push(`Tests were re-run after applying the Healer's code fixes:`);
+    lines.push(``);
+    lines.push(`| Metric | Before Fix | After Fix |`);
+    lines.push(`|--------|-----------|-----------|`);
+    lines.push(`| ✅ Passed | ${results.passed}/${results.total} | **${postFixResults.passed}/${postFixResults.total}** |`);
+    lines.push(`| ❌ Failed | ${results.failed} | **${postFixResults.failed}** |`);
+    lines.push(`| Pass Rate | ${((results.passed / Math.max(results.total, 1)) * 100).toFixed(0)}% | **${postPassRate}%** |`);
+    lines.push(`| Duration | ${results.duration_ms}ms | ${postFixResults.duration_ms}ms |`);
+    lines.push(``);
 
-  // Step-by-step results
-  lines.push(`### 📋 Step-by-Step Results`);
-  lines.push(``);
-  lines.push(`| # | Test Step | Status | Duration |`);
-  lines.push(`|---|-----------|--------|----------|`);
-  for (let i = 0; i < results.results.length; i++) {
-    const r = results.results[i];
-    const icon = r.status === "passed" ? "✅" : r.status === "failed" ? "❌" : "⏭️";
-    const name = r.name.replace(/^Step \d+: /, "");
-    lines.push(`| ${i + 1} | ${name} | ${icon} ${r.status} | ${r.duration_ms}ms |`);
+    if (postFixResults.failed === 0) {
+      lines.push(`> 🎉 **All tests pass after the fix!** This PR is ready for review.`);
+    } else {
+      lines.push(`> ⚠️ **${postFixResults.failed} test(s) still failing** after the fix. Manual review recommended.`);
+    }
+    lines.push(``);
+
+    // Post-fix step-by-step
+    lines.push(`| # | Test Step | Before | After |`);
+    lines.push(`|---|-----------|--------|-------|`);
+    for (let i = 0; i < postFixResults.results.length; i++) {
+      const post = postFixResults.results[i];
+      const pre = results.results[i];
+      const preIcon = pre?.status === "passed" ? "✅" : pre?.status === "failed" ? "❌" : "⏭️";
+      const postIcon = post.status === "passed" ? "✅" : post.status === "failed" ? "❌" : "⏭️";
+      const name = post.name.replace(/^Step \d+: /, "");
+      const changed = pre?.status !== post.status ? " 🔄" : "";
+      lines.push(`| ${i + 1} | ${name} | ${preIcon} | ${postIcon}${changed} |`);
+    }
+    lines.push(``);
+
+  } else {
+    // No post-fix results — show standard results
+    const passRate = results.total > 0 ? ((results.passed / results.total) * 100).toFixed(0) : "0";
+
+    if (hasHealerFix && results.failed > 0) {
+      lines.push(`### 📊 Test Results (before fix)`);
+      lines.push(``);
+      lines.push(`> These results are from the initial test run against the **buggy code**.`);
+      lines.push(`> The Healer's code fixes above target these failures.`);
+      lines.push(``);
+    } else {
+      lines.push(`### 📊 Test Results`);
+      lines.push(``);
+    }
+
+    lines.push(`| Metric | Value |`);
+    lines.push(`|--------|-------|`);
+    lines.push(`| Total Tests | ${results.total} |`);
+    lines.push(`| ✅ Passed | ${results.passed} |`);
+    lines.push(`| ❌ Failed | ${results.failed} |`);
+    lines.push(`| Pass Rate | ${passRate}% |`);
+    lines.push(`| Duration | ${results.duration_ms}ms |`);
+    lines.push(``);
+
+    // Step-by-step results
+    lines.push(`### 📋 Step-by-Step Results`);
+    lines.push(``);
+    lines.push(`| # | Test Step | Status | Duration |`);
+    lines.push(`|---|-----------|--------|----------|`);
+    for (let i = 0; i < results.results.length; i++) {
+      const r = results.results[i];
+      const icon = r.status === "passed" ? "✅" : r.status === "failed" ? "❌" : "⏭️";
+      const name = r.name.replace(/^Step \d+: /, "");
+      lines.push(`| ${i + 1} | ${name} | ${icon} ${r.status} | ${r.duration_ms}ms |`);
+    }
+    lines.push(``);
   }
-  lines.push(``);
 
-  // Failed test details with errors
-  const failures = results.results.filter((r) => r.status === "failed");
+  // Failed test details with errors (from pre-fix or only run)
+  const sourceResults = postFixResults ?? results;
+  const failures = sourceResults.results.filter((r) => r.status === "failed");
   if (failures.length > 0) {
     lines.push(`### 🔍 Failure Details`);
     lines.push(``);
@@ -379,6 +429,9 @@ export function buildPRBody(
   lines.push(`| 4 | Healer — Root cause analysis${hasHealerFix ? " + code fix" : ""} | ${healerResult ? "✅" : "⏭️"} |`);
   lines.push(`| 5 | Test Writer — Generate Playwright spec files | ✅ |`);
   lines.push(`| 6 | Courier — Push ${hasHealerFix ? "fixes + tests" : "tests"} & open this PR | ✅ |`);
+  if (postFixResults && hasHealerFix) {
+    lines.push(`| 7 | Verification — Re-run tests after fix | ${postFixResults.failed === 0 ? "✅" : "⚠️"} |`);
+  }
   lines.push(``);
 
   // Generated files listing

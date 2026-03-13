@@ -38,6 +38,7 @@ class GenerateTestPlanRequest(BaseModel):
     repo_url: str | None = None
     branch: str | None = "main"
     commit_sha: str | None = None
+    git_diff: str | None = None
 
 
 class GenerateTestPlanResponse(BaseModel):
@@ -159,6 +160,7 @@ async def generate_test_plan(request: GenerateTestPlanRequest):
             "changed_files": request.changed_files,
             "code_context": request.code_context,
             "target_url": request.target_url,
+            "git_diff": request.git_diff or "",
         }
 
         # Run graph (Architect + Mock Scripter)
@@ -311,6 +313,44 @@ async def analyze_failure(request: AnalyzeFailureRequest):
         proposed_fix="// TODO: Implement Healer agent\n// This will contain actual fix suggestions",
         confidence=0.5,
     )
+
+
+class StoreFixRequest(BaseModel):
+    repo_url: str = ""
+    session_id: str = ""
+    rca_type: str = ""
+    rca_report: str = ""
+    proposed_fix: str = ""
+    proposed_patch: str = ""
+    file_edits: list[dict[str, Any]] = []
+    target_files: list[str] = []
+    fix_branch: str = ""
+    confidence_score: float = 0.0
+    changed_files: list[str] = []
+    git_diff: str = ""
+    test_plan: str = ""
+    total_tests: int = 0
+    passed_tests: int = 0
+    failed_tests_count: int = 0
+    failed_tests: list[dict[str, Any]] = []
+    pr_url: str = ""
+    pr_number: int | None = None
+
+
+@app.post("/store-fix")
+async def store_fix(request: StoreFixRequest):
+    """Store a successful fix + test plan in the vector DB for future RAG retrieval."""
+    from memory.store import store_fix_from_api, store_test_plan
+
+    data = request.model_dump()
+    fix_stored = store_fix_from_api(data)
+    plan_stored = store_test_plan(data)
+
+    return {
+        "fix_stored": fix_stored,
+        "plan_stored": plan_stored,
+        "message": "Stored in RAG" if (fix_stored or plan_stored) else "Storage skipped (check MONGODB_URI/OPENAI_API_KEY)",
+    }
 
 
 # ── Server Entry Point ──────────────────────────────────────────────────────

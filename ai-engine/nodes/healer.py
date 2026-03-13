@@ -255,7 +255,25 @@ def healer_node(state: SentinelState) -> dict[str, object]:
     if past_fixes:
         memory_context = "\nSimilar Past Fixes (from Vector DB):\n"
         for idx, fix in enumerate(past_fixes, 1):
-            memory_context += f"--- Past Fix {idx} ---\nOriginal Error: {fix.get('original_error', 'N/A')}\nResolution: {fix.get('resolution', fix.get('patch', 'N/A'))}\n"
+            rca = fix.get("rca_report", "") or fix.get("rca_type", "N/A")
+            resolution = fix.get("proposed_fix", "") or fix.get("proposed_patch", "N/A")
+            edits = fix.get("file_edits", [])
+            files = fix.get("target_files", [])
+            memory_context += (
+                f"--- Past Fix {idx} ---\n"
+                f"Root Cause: {rca}\n"
+                f"Resolution: {resolution}\n"
+                f"Target Files: {files}\n"
+            )
+            if edits:
+                memory_context += f"File Edits ({len(edits)} edits):\n"
+                for e in edits[:5]:
+                    memory_context += (
+                        f"  File: {e.get('file_path', '?')}\n"
+                        f"  Search: {(e.get('search', '') or '')[:120]}...\n"
+                        f"  Replace: {(e.get('replace', '') or '')[:120]}...\n"
+                    )
+            memory_context += "\n"
     else:
         memory_context = "\nNo similar past fixes found in Vector DB."
 
