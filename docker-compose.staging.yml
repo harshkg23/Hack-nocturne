@@ -1,0 +1,84 @@
+# docker-compose.staging.yml
+# Staging overlay — adds Prometheus, Grafana, and Node Exporter for observability
+# Usage: docker compose -f docker-compose.yml -f docker-compose.staging.yml up
+
+services:
+  # ── Prometheus ──────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=7d'
+      - '--web.enable-lifecycle'
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - sentinelqa
+
+  # ── Grafana ─────────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:11.0.0
+    ports:
+      - "${GRAFANA_PORT:-3002}:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-sentinelqa}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - sentinelqa
+
+  # ── Node Exporter (container-level metrics on macOS, host-level on Linux) ────
+  node-exporter:
+    image: prom/node-exporter:v1.8.0
+    ports:
+      - "${NODE_EXPORTER_PORT:-9100}:9100"
+    # NOTE: On macOS, we skip /proc /sys mounts (Linux-only).
+    # Node exporter still reports container-level metrics which is fine for demo.
+    restart: unless-stopped
+    networks:
+      - sentinelqa
+
+  # ── Override existing services to join the network ──────────────────────────
+  sentinelqa-app:
+    networks:
+      - sentinelqa
+
+  mongodb:
+    networks:
+      - sentinelqa
+
+  ai-engine:
+    networks:
+      - sentinelqa
+
+volumes:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  sentinelqa:
+    driver: bridge

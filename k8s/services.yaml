@@ -1,0 +1,84 @@
+# Service routes to BOTH stable and canary pods
+# Traffic is split naturally by replica ratio:
+# - 2 stable + 0 canary = 100% stable
+# - 2 stable + 1 canary = ~67% stable, ~33% canary
+# - 0 stable + 2 canary = 100% canary (promoted)
+apiVersion: v1
+kind: Service
+metadata:
+  name: sentinelqa-app
+  namespace: sentinelqa
+  labels:
+    app: sentinelqa-app
+spec:
+  type: NodePort
+  selector:
+    app: sentinelqa-app
+    # NOTE: No "track" label — so this Service selects BOTH stable and canary pods
+  ports:
+    - port: 3000
+      targetPort: 3000
+      nodePort: 30000
+      name: http
+
+---
+# MongoDB Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongodb
+  namespace: sentinelqa
+spec:
+  type: ClusterIP
+  selector:
+    app: mongodb
+  ports:
+    - port: 27017
+      targetPort: 27017
+
+---
+# AI Engine Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-engine
+  namespace: sentinelqa
+spec:
+  type: ClusterIP
+  selector:
+    app: ai-engine
+  ports:
+    - port: 5000
+      targetPort: 5000
+
+---
+# Prometheus Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: sentinelqa
+spec:
+  type: NodePort
+  selector:
+    app: prometheus
+  ports:
+    - port: 9090
+      targetPort: 9090
+      nodePort: 30090
+
+---
+# Grafana Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: sentinelqa
+spec:
+  type: NodePort
+  selector:
+    app: grafana
+  ports:
+    - port: 3000
+      targetPort: 3000
+      nodePort: 30020

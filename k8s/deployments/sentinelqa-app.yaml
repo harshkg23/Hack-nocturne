@@ -1,0 +1,129 @@
+# SentinelQA App — Stable Deployment
+# This is the "stable" version that receives 100% traffic by default
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sentinelqa-app-stable
+  namespace: sentinelqa
+  labels:
+    app: sentinelqa-app
+    track: stable
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: sentinelqa-app
+      track: stable
+  template:
+    metadata:
+      labels:
+        app: sentinelqa-app
+        track: stable
+    spec:
+      containers:
+        - name: sentinelqa-app
+          image: sentinelqa-app:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+              name: http
+          env:
+            - name: MONGODB_URI
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelqa-secrets
+                  key: mongodb-uri
+            - name: NEXTAUTH_URL
+              value: "http://sentinelqa-app.sentinelqa.svc.cluster.local:3000"
+            - name: NEXTAUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelqa-secrets
+                  key: nextauth-secret
+            - name: AI_ENGINE_URL
+              value: "http://ai-engine.sentinelqa.svc.cluster.local:5000"
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 20
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+
+---
+# SentinelQA App — Canary Deployment
+# Gets a fraction of traffic during canary rollouts
+# Scale replicas to 0 when not doing a canary deploy
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sentinelqa-app-canary
+  namespace: sentinelqa
+  labels:
+    app: sentinelqa-app
+    track: canary
+spec:
+  replicas: 0  # Scale up to 1 during canary deploy
+  selector:
+    matchLabels:
+      app: sentinelqa-app
+      track: canary
+  template:
+    metadata:
+      labels:
+        app: sentinelqa-app
+        track: canary
+    spec:
+      containers:
+        - name: sentinelqa-app
+          image: sentinelqa-app:canary  # New image to test
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+              name: http
+          env:
+            - name: MONGODB_URI
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelqa-secrets
+                  key: mongodb-uri
+            - name: NEXTAUTH_URL
+              value: "http://sentinelqa-app.sentinelqa.svc.cluster.local:3000"
+            - name: NEXTAUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelqa-secrets
+                  key: nextauth-secret
+            - name: AI_ENGINE_URL
+              value: "http://ai-engine.sentinelqa.svc.cluster.local:5000"
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 20
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

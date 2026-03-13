@@ -1,0 +1,8 @@
+# Kubernetes namespace for SentinelQA
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sentinelqa
+  labels:
+    app.kubernetes.io/part-of: sentinelqa
+    environment: staging
