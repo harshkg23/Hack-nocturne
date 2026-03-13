@@ -36,6 +36,45 @@ export async function POST(request: NextRequest) {
         if (overrides.target_url) target_url = overrides.target_url;
 
         const { github_token, github_mcp_mode = "npx" } = body;
+    let owner = "";
+    let repo = "";
+    let branch = "main";
+    let target_url = "";
+    let slackChannel: string | undefined;
+    let body: Record<string, unknown> = {};
+
+    try {
+        try {
+            body = (await request.json()) as Record<string, unknown>;
+        } catch {
+            return NextResponse.json(
+                { error: "Invalid JSON body. Provide a valid pipeline payload." },
+                { status: 400 }
+            );
+        }
+
+        ({
+            owner,
+            repo,
+            branch = "main",
+            target_url,
+        } = body as { owner: string; repo: string; branch?: string; target_url: string });
+
+        const {
+            github_token,
+            github_mcp_mode = "docker",
+            selected_pr,
+            slack_channel,
+            session_id,
+        } = body as {
+            github_token?: string;
+            github_mcp_mode?: "docker" | "npx";
+            selected_pr?: { number?: number; title?: string; url?: string };
+            slack_channel?: string;
+            session_id?: string;
+        };
+
+        slackChannel = slack_channel?.trim() || undefined;
 
         if (!owner || !repo || !target_url) {
             return NextResponse.json(
@@ -44,8 +83,13 @@ export async function POST(request: NextRequest) {
             );
         }
 
-        // 🔔 Notify Slack: pipeline manually started (no commit context here)
-        void notifyPipelineStarted(owner, repo, branch, target_url);
+        // 🔔 Notify Slack: pipeline manually started with optional PR context and channel
+        const pipelineTarget = selected_pr?.number
+            ? `${target_url} (PR #${selected_pr.number})`
+            : target_url;
+        void notifyPipelineStarted(owner, repo, branch, pipelineTarget, {
+            channel: slackChannel,
+        });
 
         const orchestrator = new AgentOrchestrator({
             owner,
@@ -54,6 +98,7 @@ export async function POST(request: NextRequest) {
             targetUrl: target_url,
             githubToken: github_token,
             githubMcpMode: github_mcp_mode,
+            sessionId: session_id,
         });
 
         const { codeContext, testPlan, results, courier, pr } =
@@ -68,11 +113,13 @@ export async function POST(request: NextRequest) {
                 owner, repo, target_url,
                 results.passed, results.failed, results.total,
                 results.duration_ms, results.session_id, failedSteps
+                , { channel: slackChannel }
             );
         } else {
             void notifyTestsPassed(
                 owner, repo, target_url,
                 results.total, results.duration_ms, results.session_id
+                , { channel: slackChannel }
             );
         }
 
@@ -106,7 +153,9 @@ export async function POST(request: NextRequest) {
 
         // 🔔 Notify Slack: pipeline error (fire-and-forget)
         if (owner && repo) {
-            void notifyPipelineError(owner, repo, "Pipeline Execution", errorMessage);
+            void notifyPipelineError(owner, repo, "Pipeline Execution", errorMessage, {
+                channel: slackChannel,
+            });
         }
 
         return NextResponse.json({ error: errorMessage }, { status: 500 });

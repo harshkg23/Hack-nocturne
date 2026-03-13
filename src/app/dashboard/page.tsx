@@ -47,6 +47,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
+import { useSessionWebSocket } from "@/hooks/use-websocket";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -83,6 +84,89 @@ interface TestResult {
   duration: string;
   error?: string;
 }
+
+interface OpenPullRequest {
+  number: number;
+  title: string;
+  state: string;
+  url: string;
+  author: string;
+  headRef: string;
+  baseRef: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+const mapEventAgentToFlowAgent = (agentName?: string): keyof Record<string, AgentStatus> | null => {
+  if (!agentName) return null;
+  const normalized = agentName.toLowerCase();
+  if (normalized === "playwright") return "scripter";
+  if (normalized === "test-writer") return "courier";
+  if (["architect", "scripter", "watchdog", "healer", "courier"].includes(normalized)) {
+    return normalized as keyof Record<string, AgentStatus>;
+  }
+  return null;
+};
+
+const buildAgentTasks = (statuses: Record<string, AgentStatus>): Record<string, string> => ({
+  architect:
+    statuses.architect === "running"
+      ? "Reading repository via GitHub MCP..."
+      : statuses.architect === "success"
+      ? "Repository analysis completed"
+      : "Awaiting trigger…",
+  scripter:
+    statuses.scripter === "running"
+      ? "Generating and executing tests..."
+      : statuses.scripter === "success"
+      ? "Test execution finished"
+      : "Awaiting test plan…",
+  watchdog:
+    statuses.watchdog === "running"
+      ? "Analyzing failed test telemetry..."
+      : statuses.watchdog === "success"
+      ? "Anomalies analyzed"
+      : "Monitoring metrics…",
+  healer:
+    statuses.healer === "running"
+      ? "Preparing remediation context..."
+      : statuses.healer === "success"
+      ? "RCA prepared"
+      : "On standby…",
+  courier:
+    statuses.courier === "running"
+      ? "Dispatching GitHub/Slack notifications..."
+      : statuses.courier === "success"
+      ? "Notifications completed"
+      : "Ready to notify…",
+});
+
+const derivePipelineStage = (
+  statuses: Record<string, AgentStatus>,
+  sessionStatus?: string,
+  courierType?: "pr" | "issue",
+): PipelineStage => {
+  if (statuses.architect === "running") return "architect";
+  if (statuses.scripter === "running") return "scripter";
+  if (statuses.watchdog === "running") return "watchdog";
+  if (statuses.healer === "running") return "healer";
+
+  if (statuses.courier === "running" || statuses.courier === "success") {
+    if (courierType === "issue") return "courier_issue";
+    if (courierType === "pr") return "courier_pr";
+    if (statuses.watchdog === "idle" && statuses.healer === "idle") return "complete";
+    return "courier_pr";
+  }
+
+  if (sessionStatus === "completed") return "complete";
+  if (sessionStatus === "failed") return courierType === "issue" ? "courier_issue" : "courier_pr";
+
+  if (statuses.healer === "success") return "healer";
+  if (statuses.watchdog === "success") return "watchdog";
+  if (statuses.scripter === "success") return "scripter";
+  if (statuses.architect === "success") return "architect";
+  return "idle";
+};
 
 // ─── Agent Configs ────────────────────────────────────────────────────────────
 
@@ -894,182 +978,330 @@ function AgentMiniCard({
 function PipelineFlowViz({
   stage,
   agentStatuses,
+  terminalLines,
 }: {
   stage: PipelineStage;
   agentStatuses: Record<string, AgentStatus>;
+  terminalLines: TerminalLine[];
 }) {
-  const nodeClass = (id: string, activeStage: string) => {
-    const agent = AGENTS.find((a) => a.id === id);
-    if (!agent) return "";
-    const s = agentStatuses[id] ?? "idle";
-    const isActive = activeStage === id || stage === activeStage;
-    return `${agent.bg} border ${s === "running" ? agent.border : s === "success" ? "border-emerald-500/40" : s === "error" ? "border-red-500/40" : "border-border/40"} ${agent.text}`;
-  };
 
-  const FlowNode = ({
-    id,
-    label,
-    role,
-    sublabel,
-  }: {
-    id: string;
-    label: string;
-    role: string;
-    sublabel?: string;
-  }) => {
+  const AgentNode = ({ id, label, role }: { id: string; label: string; role: string }) => {
     const agent = AGENTS.find((a) => a.id === id);
     const s = agentStatuses[id] ?? "idle";
+    const agentBg = agent?.bg ?? "bg-muted/20";
+    const agentBorder = agent?.border ?? "border-border/40";
+    const agentText = agent?.text ?? "text-muted-foreground";
+    const agentColor = agent?.color;
+    let cls = `${agentBg} border ${agentBorder} ${agentText}`;
+    if (s === "running") cls = `${agentBg} border-2 ${agentBorder} ${agentText}`;
+    if (s === "success") cls = "bg-emerald-500/10 border-2 border-emerald-500/50 text-emerald-400";
+    if (s === "error")   cls = "bg-red-500/10 border-2 border-red-500/50 text-red-400";
     return (
       <motion.div
-        animate={s === "running" ? { scale: [1, 1.02, 1] } : {}}
+        animate={s === "running" ? { scale: [1, 1.03, 1] } : {}}
         transition={{ duration: 1.5, repeat: Infinity }}
-        className={`relative rounded-xl p-3 border text-center min-w-[130px] ${nodeClass(id, id)}`}
+        style={s === "running" ? { boxShadow: `0 0 18px ${agentColor}40` } : {}}
+        className={`relative rounded-2xl p-4 text-center w-full max-w-[180px] transition-all ${cls}`}
       >
-        <div
-          className={`w-8 h-8 rounded-lg mx-auto mb-2 flex items-center justify-center ${agent?.bg}`}
-        >
-          {agent?.icon}
+        <div className={`w-10 h-10 rounded-xl mx-auto mb-2 flex items-center justify-center ${agentBg} border ${agentBorder}`}>
+          <span className="scale-110">{agent?.icon}</span>
         </div>
-        <p className="text-[11px] font-bold tracking-wide">{label}</p>
-        <p className="text-[9px] opacity-60 mt-0.5">{role}</p>
-        {sublabel && <p className="text-[9px] opacity-50 mt-0.5">{sublabel}</p>}
-        <div className="mt-1.5">
+        <p className="text-xs font-bold tracking-wider uppercase">{label}</p>
+        <p className="text-[10px] opacity-50 mt-0.5 leading-tight">{role}</p>
+        <div className="mt-2 flex justify-center">
           <StatusBadge status={s} />
         </div>
         {s === "running" && (
-          <div
-            className="absolute -inset-px rounded-xl border animate-pulse"
-            style={{ borderColor: `${agent?.color}40` }}
-          />
+          <div className="absolute -inset-px rounded-2xl border-2 animate-pulse pointer-events-none"
+            style={{ borderColor: `${agentColor}60` }} />
         )}
       </motion.div>
     );
   };
 
-  const Arrow = ({ vertical }: { vertical?: boolean }) => (
-    <div
-      className={`flex items-center justify-center ${vertical ? "flex-col" : ""}`}
-    >
-      {vertical ? (
-        <div className="w-px h-6 bg-gradient-to-b from-border/50 to-border/50 relative">
-          <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-t-4 border-l-transparent border-r-transparent border-t-border/60" />
-        </div>
-      ) : (
-        <div className="h-px w-8 bg-gradient-to-r from-border/50 to-border/50 relative flex items-center justify-end">
-          <div className="absolute -right-1 w-0 h-0 border-t-4 border-b-4 border-l-4 border-t-transparent border-b-transparent border-l-border/60" />
-        </div>
+  const VConn = ({
+    label,
+    active = false,
+    tone = "primary",
+  }: {
+    label?: string;
+    active?: boolean;
+    tone?: "primary" | "success" | "danger";
+  }) => (
+    <div className="flex flex-col items-center">
+      <div className={`w-px h-5 bg-gradient-to-b ${
+        active
+          ? tone === "success"
+            ? "from-emerald-400/30 to-emerald-400/90"
+            : tone === "danger"
+            ? "from-red-400/30 to-red-400/90"
+            : "from-cyan-400/30 to-cyan-400/90"
+          : "from-border/30 to-border/60"
+      }`} />
+      {label && (
+        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full my-0.5 border ${
+          active
+            ? label === "YES"
+              ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/30"
+              : "text-red-400 bg-red-500/10 border-red-500/30"
+            : "text-muted-foreground/70 bg-muted/20 border-border/40"
+        }`}>{label}</span>
       )}
+      <div className={`w-px h-4 relative ${
+        active
+          ? tone === "success"
+            ? "bg-emerald-400/90"
+            : tone === "danger"
+            ? "bg-red-400/90"
+            : "bg-cyan-400/90"
+          : "bg-border/60"
+      }`}>
+        <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-0 h-0
+          border-l-[5px] border-r-[5px] border-t-[6px]
+          border-l-transparent border-r-transparent"
+          style={{
+            borderTopColor: active
+              ? tone === "success"
+                ? "rgb(52 211 153 / 0.9)"
+                : tone === "danger"
+                ? "rgb(248 113 113 / 0.9)"
+                : "rgb(34 211 238 / 0.9)"
+              : "rgb(148 163 184 / 0.6)",
+          }}
+        />
+      </div>
     </div>
   );
 
-  const Decision = ({ label }: { label: string }) => (
-    <div className="relative w-24 h-12 flex items-center justify-center">
-      <div className="absolute inset-0 rotate-45 rounded-md border border-border/50 bg-muted/20" />
-      <p className="relative z-10 text-[10px] font-bold text-foreground/60 text-center leading-tight px-1">
-        {label}
-      </p>
+  const Diamond = ({ label, active = false }: { label: string; active?: boolean }) => (
+    <div className="relative flex items-center justify-center my-2" style={{ width: 120, height: 64 }}>
+      <div className="absolute inset-0 flex items-center justify-center">
+        <div className={`w-[80px] h-[80px] rotate-45 rounded-xl border-2 transition-all ${
+          active
+            ? "border-primary/80 bg-primary/20 shadow-[0_0_20px_rgba(99,102,241,0.4)]"
+            : "border-primary/25 bg-primary/5"
+        }`} />
+      </div>
+      <p className={`relative z-10 text-[11px] font-bold text-center leading-snug px-3 whitespace-pre-line ${
+        active ? "text-primary" : "text-primary/60"
+      }`}>{label}</p>
     </div>
   );
+
+  const TriggerNode = () => (
+    <div className={`rounded-2xl p-4 text-center border transition-all ${
+      stage !== "idle"
+        ? "border-primary/60 bg-primary/10 text-primary shadow-[0_0_20px_rgba(99,102,241,0.25)]"
+        : "border-border/40 bg-muted/20 text-muted-foreground"
+    }`}>
+      <GitCommit className="w-7 h-7 mx-auto mb-2" />
+      <p className="text-xs font-bold uppercase tracking-wider">Code Push</p>
+      <p className="text-[10px] opacity-50 mt-0.5">Trigger</p>
+    </div>
+  );
+
+
+  /* Courier outcome node */
+  const OutcomeNode = ({
+    icon, label, sublabel, active, activeClass,
+  }: {
+    icon: React.ReactNode;
+    label: string;
+    sublabel: string;
+    active: boolean;
+    activeClass: string;
+  }) => (
+    <div className={`rounded-2xl p-3 text-center border w-full max-w-[160px] transition-all ${
+      active ? activeClass : "border-border/40 bg-muted/20 text-muted-foreground"
+    }`}>
+      <div className="w-8 h-8 mx-auto mb-1.5 flex items-center justify-center">{icon}</div>
+      <p className="text-xs font-bold uppercase tracking-wide">{label}</p>
+      <p className="text-[10px] opacity-60 mt-0.5 leading-tight">{sublabel}</p>
+    </div>
+  );
+
+  /* Log colors */
+  const logColor: Record<string, string> = {
+    system:  "text-primary font-semibold",
+    info:    "text-foreground/70",
+    success: "text-emerald-400",
+    error:   "text-red-400",
+    warn:    "text-amber-400",
+    agent:   "text-cyan-400",
+  };
+
+  const playwrightPassed = terminalLines.filter(
+    (l) => l.text.includes("✓") && (l.text.includes("test(") || l.text.includes("SCRIPTER"))
+  ).length;
+
+  const logRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+  }, [terminalLines]);
+
+  const stageRank: Record<PipelineStage, number> = {
+    idle: 0,
+    architect: 1,
+    scripter: 2,
+    watchdog: 3,
+    healer: 4,
+    courier_pr: 5,
+    courier_issue: 5,
+    complete: 6,
+  };
+  const atLeast = (target: PipelineStage) => stageRank[stage] >= stageRank[target];
+
+  const courierPrActive = stage === "courier_pr" || stage === "complete";
+  const courierIssueActive = stage === "courier_issue";
+  const courierSlackActive = agentStatuses.courier === "success" && stage === "complete";
+
+  const triggerToArchitectActive = atLeast("architect");
+  const architectToScripterActive = atLeast("scripter");
+  const scripterToDecisionActive = atLeast("scripter");
+  const failBranchActive = atLeast("watchdog") || courierIssueActive || courierPrActive;
+  const watchdogToHealerActive = atLeast("healer");
+  const healerToConfidenceActive = atLeast("healer");
 
   return (
-    <div className="glass rounded-2xl neon-border p-6 overflow-x-auto">
-      <h3 className="text-sm font-bold text-foreground mb-6 flex items-center gap-2">
-        <Activity className="w-4 h-4 text-primary" />
-        Live Pipeline — Multi-Agent Data Flow
-      </h3>
-
-      {/* Row 1: Trigger → Architect → Scripter → Decision */}
-      <div className="flex items-center gap-2 mb-4">
-        {/* Trigger */}
-        <div
-          className={`rounded-xl p-3 border text-center min-w-[100px] ${stage !== "idle" ? "border-primary/40 bg-primary/10 text-primary" : "border-border/40 bg-muted/20 text-muted-foreground"}`}
-        >
-          <GitCommit className="w-6 h-6 mx-auto mb-1.5" />
-          <p className="text-[11px] font-bold">CODE PUSH</p>
-          <p className="text-[9px] opacity-60">Trigger</p>
-        </div>
-        <Arrow />
-        <FlowNode
-          id="architect"
-          label="THE ARCHITECT"
-          role="Planner"
-          sublabel="Aaskar"
-        />
-        <Arrow />
-        <FlowNode
-          id="scripter"
-          label="THE SCRIPTER"
-          role="Playwright MCP"
-          sublabel="Harsh & Himanshu"
-        />
-        <Arrow />
-        <Decision label="Tests Pass?" />
-
-        {/* YES branch */}
-        <div className="flex flex-col items-center gap-1">
-          <span className="text-[10px] text-emerald-400 font-bold">YES</span>
-          <Arrow />
-          <div
-            className={`rounded-xl p-3 border text-center min-w-[110px] ${agentStatuses.courier === "success" && stage === "complete" ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400" : "border-border/40 bg-muted/20 text-muted-foreground"}`}
-          >
-            <Send className="w-5 h-5 mx-auto mb-1.5" />
-            <p className="text-[11px] font-bold">COURIER</p>
-            <p className="text-[9px] opacity-60">All Clear → Slack</p>
+    <div className="glass rounded-2xl neon-border overflow-hidden">
+      {/* ── Header ── */}
+      <div className="flex items-center justify-between px-6 py-4 border-b border-border/40 bg-card/30">
+        <div className="flex items-center gap-2.5">
+          <div className="w-7 h-7 rounded-lg bg-primary/15 border border-primary/30 flex items-center justify-center">
+            <Activity className="w-3.5 h-3.5 text-primary" />
           </div>
+          <div>
+            <p className="text-sm font-bold text-foreground">Live Pipeline</p>
+            <p className="text-[10px] text-muted-foreground">Multi-Agent Data Flow</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
+          {stage !== "idle" && (
+            <span className="relative flex items-center gap-1.5 text-xs font-medium text-secondary">
+              <span className="w-2 h-2 rounded-full bg-secondary animate-ping absolute" />
+              <span className="w-2 h-2 rounded-full bg-secondary relative" />
+              <span className="ml-1">Live</span>
+            </span>
+          )}
+          <span className={`text-xs px-3 py-1 rounded-full border font-semibold tracking-wide ${
+            stage === "idle"
+              ? "text-muted-foreground border-border/50 bg-muted/20"
+              : stage === "complete"
+              ? "text-emerald-400 border-emerald-500/40 bg-emerald-500/10"
+              : "text-cyan-400 border-cyan-500/40 bg-cyan-500/10 animate-pulse"
+          }`}>
+            {stage === "idle" ? "Idle" : stage === "complete" ? "✓ Complete" : `▶ ${stage.toUpperCase()}`}
+          </span>
         </div>
       </div>
 
-      {/* NO branch — flows down from Decision */}
-      <div className="ml-[460px] flex flex-col items-start gap-0">
-        <div className="flex items-center gap-1 mb-1">
-          <span className="text-[10px] text-red-400 font-bold ml-2">NO</span>
+      {/* ── Body: exactly 50/50 ── */}
+      <div className="grid grid-cols-[1.1fr_0.9fr] divide-x divide-border/30 min-h-[560px]">
+
+        {/* ══ LEFT: Flow Diagram ══ */}
+        <div className="p-6 flex flex-col items-center overflow-y-auto gap-0 h-full">
+          <TriggerNode />
+          <VConn active={triggerToArchitectActive} />
+          <AgentNode id="architect" label="Architect" role="Plans tests via GitHub MCP" />
+          <VConn active={architectToScripterActive} />
+          <AgentNode id="scripter" label="Scripter" role="Playwright MCP executor" />
+          <VConn active={scripterToDecisionActive} />
+          <Diamond label={"Tests\nPass?"} active={stage !== "idle"} />
+
+          {/* YES / NO fork */}
+          <div className="w-full flex justify-around items-start gap-4 mt-1">
+            {/* ── YES PATH ── */}
+            <div className="flex flex-col items-center">
+              <VConn label="YES" active={courierSlackActive} tone="success" />
+              <OutcomeNode
+                icon={<Send className="w-5 h-5" />}
+                label="Courier"
+                sublabel="All Clear → Slack"
+                active={courierSlackActive}
+                activeClass="border-emerald-500/60 bg-emerald-500/10 text-emerald-400 shadow-[0_0_16px_rgba(16,185,129,0.25)]"
+              />
+            </div>
+
+            {/* ── NO PATH ── */}
+            <div className="flex flex-col items-center">
+              <VConn label="NO" active={failBranchActive} tone="danger" />
+              <AgentNode id="watchdog" label="Watchdog" role="SRE metrics + logs" />
+              <VConn active={watchdogToHealerActive} tone="danger" />
+              <AgentNode id="healer" label="Healer" role="RCA + code patch" />
+              <VConn active={healerToConfidenceActive} tone="danger" />
+              <Diamond label={"Confidence\n>80%?"} active={["healer","courier_pr","courier_issue","complete"].includes(stage)} />
+              <div className="w-full flex justify-around gap-2 mt-1">
+                <div className="flex flex-col items-center">
+                  <VConn label="YES" active={courierPrActive} tone="success" />
+                  <OutcomeNode
+                    icon={<Github className="w-4 h-4" />}
+                    label="Courier"
+                    sublabel="GitHub PR"
+                    active={courierPrActive}
+                    activeClass="border-blue-500/60 bg-blue-500/10 text-blue-400 shadow-[0_0_16px_rgba(59,130,246,0.25)]"
+                  />
+                </div>
+                <div className="flex flex-col items-center">
+                  <VConn label="NO" active={courierIssueActive} tone="danger" />
+                  <OutcomeNode
+                    icon={<AlertTriangle className="w-4 h-4" />}
+                    label="Courier"
+                    sublabel="GitHub Issue"
+                    active={courierIssueActive}
+                    activeClass="border-red-500/60 bg-red-500/10 text-red-400 shadow-[0_0_16px_rgba(239,68,68,0.25)]"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
-        <div className="flex items-start gap-2">
-          <Arrow vertical />
-          <div className="flex flex-col gap-2 -mt-3">
-            <FlowNode
-              id="watchdog"
-              label="THE WATCHDOG"
-              role="SRE Monitor"
-              sublabel="Arpit"
-            />
-            <div className="flex justify-center">
-              <Arrow vertical />
+
+        {/* ══ RIGHT: Live Logs ══ */}
+        <div className="flex flex-col h-full">
+          {/* Toolbar */}
+          <div className="flex items-center gap-2 px-4 py-3 border-b border-border/40 bg-black/30 shrink-0">
+            <div className="flex gap-1.5">
+              <span className="w-3 h-3 rounded-full bg-red-500/70" />
+              <span className="w-3 h-3 rounded-full bg-amber-500/70" />
+              <span className="w-3 h-3 rounded-full bg-emerald-500/70" />
             </div>
-            <FlowNode
-              id="healer"
-              label="THE HEALER"
-              role="Debugger"
-              sublabel="Aaskar"
-            />
-            <div className="flex justify-center">
-              <Arrow vertical />
-            </div>
-            <Decision label="Confidence >80%?" />
-            <div className="flex gap-6 mt-1">
-              <div className="flex flex-col items-center gap-1">
-                <span className="text-[10px] text-emerald-400 font-bold">
-                  YES
+            <span className="text-xs font-mono text-muted-foreground ml-1">execution-logs</span>
+            <div className="ml-auto flex items-center gap-2">
+              {playwrightPassed > 0 && (
+                <span className="text-[10px] px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 font-mono">
+                  playwright · {playwrightPassed} ✓
                 </span>
-                <Arrow vertical />
-                <div
-                  className={`rounded-xl p-3 border text-center min-w-[110px] ${stage === "courier_pr" || stage === "complete" ? "border-blue-500/40 bg-blue-500/10 text-blue-400" : "border-border/40 bg-muted/20 text-muted-foreground"}`}
-                >
-                  <Github className="w-5 h-5 mx-auto mb-1.5" />
-                  <p className="text-[11px] font-bold">COURIER</p>
-                  <p className="text-[9px] opacity-60">Create GitHub PR</p>
-                </div>
-              </div>
-              <div className="flex flex-col items-center gap-1">
-                <span className="text-[10px] text-red-400 font-bold">NO</span>
-                <Arrow vertical />
-                <div className="rounded-xl p-3 border border-border/40 bg-muted/20 text-muted-foreground text-center min-w-[110px]">
-                  <AlertTriangle className="w-5 h-5 mx-auto mb-1.5" />
-                  <p className="text-[11px] font-bold">COURIER</p>
-                  <p className="text-[9px] opacity-60">Create GitHub Issue</p>
-                </div>
-              </div>
+              )}
+              {stage !== "idle" && (
+                <span className="flex items-center gap-1.5 text-[10px] text-secondary">
+                  <span className="w-1.5 h-1.5 rounded-full bg-secondary animate-pulse" />
+                  streaming
+                </span>
+              )}
             </div>
+          </div>
+
+          {/* Log stream */}
+          <div
+            ref={logRef}
+            className="flex-1 h-full overflow-y-auto p-3 font-mono text-[10px] leading-relaxed bg-black/40 space-y-0.5"
+          >
+            {terminalLines.length === 0 ? (
+              <p className="text-muted-foreground/30 pt-4 text-center text-xs">Run pipeline to see live logs…</p>
+            ) : (
+              terminalLines.map((line, i) => (
+                <motion.div
+                  key={i}
+                  initial={{ opacity: 0, x: 6 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ duration: 0.2 }}
+                  className="flex gap-2"
+                >
+                  <span className="text-muted-foreground/30 shrink-0 tabular-nums">{line.ts}</span>
+                  <span className={logColor[line.type] ?? "text-foreground/60"}>{line.text}</span>
+                </motion.div>
+              ))
+            )}
           </div>
         </div>
       </div>
@@ -1637,50 +1869,42 @@ function RcaTab({ stage }: { stage: PipelineStage }) {
 
 // ─── PR Tracker Tab ───────────────────────────────────────────────────────────
 
-const MOCK_PRS = [
-  {
-    id: 47,
-    title: "fix: update checkout button selector for test stability",
-    branch: "sentinel/fix-checkout-selector",
-    status: "open",
-    confidence: 94,
-    time: "Just now",
-    tests: "13/14",
-    author: "SentinelQA Bot",
-    url: "#",
-  },
-  {
-    id: 39,
-    title: "fix: update profile avatar locator — data-testid migration",
-    branch: "sentinel/fix-profile-avatar",
-    status: "merged",
-    confidence: 88,
-    time: "2h ago",
-    tests: "14/14",
-    author: "SentinelQA Bot",
-    url: "#",
-  },
-  {
-    id: 31,
-    title: "fix: search results container selector changed",
-    branch: "sentinel/fix-search-container",
-    status: "merged",
-    confidence: 91,
-    time: "1d ago",
-    tests: "14/14",
-    author: "SentinelQA Bot",
-    url: "#",
-  },
-];
+function PrsTab({
+  pullRequests,
+  loading,
+  error,
+  selectedPrNumber,
+  onSelect,
+  onRefresh,
+}: {
+  pullRequests: OpenPullRequest[];
+  loading: boolean;
+  error: string;
+  selectedPrNumber: number | null;
+  onSelect: (prNumber: number) => void;
+  onRefresh: () => void;
+}) {
+  const openCount = pullRequests.filter((pr) => pr.state === "open").length;
 
-function PrsTab() {
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-3 gap-3">
         {[
-          { label: "Total PRs", value: "12", color: "text-foreground" },
-          { label: "Merged", value: "10", color: "text-emerald-400" },
-          { label: "Open", value: "1", color: "text-amber-400" },
+          {
+            label: "Loaded PRs",
+            value: String(pullRequests.length),
+            color: "text-foreground",
+          },
+          {
+            label: "Selected",
+            value: selectedPrNumber ? `#${selectedPrNumber}` : "None",
+            color: "text-cyan-400",
+          },
+          {
+            label: "Open",
+            value: String(openCount),
+            color: "text-amber-400",
+          },
         ].map((s) => (
           <div
             key={s.label}
@@ -1692,57 +1916,93 @@ function PrsTab() {
         ))}
       </div>
 
+      <div className="flex items-center justify-between gap-3 glass rounded-xl border border-border/40 p-3">
+        <p className="text-xs text-muted-foreground">
+          Open PRs from GitHub MCP for your selected repository.
+        </p>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={onRefresh}
+          disabled={loading}
+          className="gap-1.5 border-border/50"
+        >
+          {loading ? (
+            <>
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              Refreshing
+            </>
+          ) : (
+            <>
+              <RefreshCcw className="w-3.5 h-3.5" />
+              Refresh
+            </>
+          )}
+        </Button>
+      </div>
+
+      {error ? (
+        <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-300">
+          {error}
+        </div>
+      ) : null}
+
       <div className="space-y-3">
-        {MOCK_PRS.map((pr) => (
+        {pullRequests.length === 0 && !loading ? (
+          <div className="glass rounded-xl border border-border/40 p-5 text-sm text-muted-foreground">
+            No open pull requests found for this repository.
+          </div>
+        ) : null}
+
+        {pullRequests.map((pr) => (
           <div
-            key={pr.id}
-            className={`glass rounded-xl border p-5 ${pr.status === "open" ? "border-amber-500/30 bg-amber-500/5" : "border-border/40"}`}
+            key={pr.number}
+            role="button"
+            tabIndex={0}
+            onClick={() => onSelect(pr.number)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onSelect(pr.number);
+              }
+            }}
+            className={`glass rounded-xl border p-5 cursor-pointer transition-colors ${selectedPrNumber === pr.number ? "border-blue-500/70 bg-blue-500/15" : "border-border/40"}`}
           >
             <div className="flex items-start justify-between gap-4">
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 mb-2">
                   <span
-                    className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
-                      pr.status === "open"
-                        ? "bg-amber-500/10 text-amber-400 border-amber-500/30"
-                        : "bg-emerald-500/10 text-emerald-400 border-emerald-500/30"
-                    }`}
+                    className="text-[10px] font-bold px-2 py-0.5 rounded-full border bg-amber-500/10 text-amber-400 border-amber-500/30"
                   >
-                    {pr.status === "open" ? "● OPEN" : "✓ MERGED"}
+                    ● OPEN
                   </span>
                   <span className="text-[10px] text-muted-foreground">
-                    PR #{pr.id}
-                  </span>
-                  <span className="text-[10px] text-muted-foreground">·</span>
-                  <span className="text-[10px] text-muted-foreground">
-                    {pr.time}
+                    PR #{pr.number}
                   </span>
                 </div>
                 <h4 className="text-sm font-semibold text-foreground mb-1">
                   {pr.title}
                 </h4>
                 <p className="text-xs font-mono text-muted-foreground/60">
-                  {pr.branch}
+                  {pr.headRef} → {pr.baseRef}
                 </p>
               </div>
               <div className="text-right shrink-0">
-                <p className="text-lg font-black text-emerald-400">
-                  {pr.confidence}%
-                </p>
-                <p className="text-[10px] text-muted-foreground">confidence</p>
+                <p className="text-[10px] text-muted-foreground">author</p>
+                <p className="text-sm font-semibold text-foreground">{pr.author}</p>
               </div>
             </div>
             <div className="flex items-center gap-4 mt-3 pt-3 border-t border-border/30">
-              <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                <FlaskConical className="w-3 h-3" />
-                {pr.tests} tests
-              </div>
-              <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                <Bot className="w-3 h-3" />
-                {pr.author}
+              <div
+                className={`flex items-center gap-1.5 text-xs ${selectedPrNumber === pr.number ? "text-blue-300" : "text-muted-foreground"}`}
+              >
+                <CheckCircle2 className="w-3 h-3" />
+                {selectedPrNumber === pr.number ? "Selected" : "Click to select"}
               </div>
               <a
                 href={pr.url}
+                target="_blank"
+                rel="noreferrer"
                 className="ml-auto flex items-center gap-1 text-xs text-primary hover:text-primary/80 transition-colors"
               >
                 <Github className="w-3 h-3" /> View on GitHub{" "}
@@ -1760,45 +2020,187 @@ function PrsTab() {
 
 function PipelineTab({
   stage,
+  terminalLines,
   agentStatuses,
+  owner,
+  repo,
+  branch,
+  targetUrl,
+  slackChannel,
+  githubMcpMode,
+  prSearch,
+  pullRequests,
+  selectedPrNumber,
+  prsLoading,
+  prsError,
+  onConfigChange,
+  onPrSearchChange,
+  onRefreshPrs,
+  onSelectPr,
   onRun,
   running,
 }: {
   stage: PipelineStage;
+  terminalLines: TerminalLine[];
   agentStatuses: Record<string, AgentStatus>;
+  owner: string;
+  repo: string;
+  branch: string;
+  targetUrl: string;
+  slackChannel: string;
+  githubMcpMode: "docker" | "npx";
+  prSearch: string;
+  pullRequests: OpenPullRequest[];
+  selectedPrNumber: number | null;
+  prsLoading: boolean;
+  prsError: string;
+  onConfigChange: (field: string, value: string) => void;
+  onPrSearchChange: (value: string) => void;
+  onRefreshPrs: () => void;
+  onSelectPr: (prNumber: number) => void;
   onRun: () => void;
   running: boolean;
 }) {
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-lg font-bold text-foreground">
-            Multi-Agent Pipeline
-          </h2>
-          <p className="text-sm text-muted-foreground">
-            Real-time orchestration across all 5 AI agents
-          </p>
+      <div className="glass rounded-xl border border-border/40 p-4 space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-lg font-bold text-foreground">
+              Multi-Agent Pipeline
+            </h2>
+            <p className="text-sm text-muted-foreground">
+              Select a repository PR, then start the end-to-end flow with Slack notifications.
+            </p>
+          </div>
+          <Button
+            onClick={onRun}
+            disabled={running || !selectedPrNumber || !owner || !repo || !targetUrl}
+            className="glow-cyan bg-primary text-primary-foreground hover:bg-primary/90 gap-2"
+          >
+            {running ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Running…
+              </>
+            ) : (
+              <>
+                <Play className="w-4 h-4" />
+                Start Flow
+              </>
+            )}
+          </Button>
         </div>
-        <Button
-          onClick={onRun}
-          disabled={running}
-          className="glow-cyan bg-primary text-primary-foreground hover:bg-primary/90 gap-2"
-        >
-          {running ? (
-            <>
-              <Loader2 className="w-4 h-4 animate-spin" />
-              Running…
-            </>
-          ) : (
-            <>
-              <Play className="w-4 h-4" />
-              Run Pipeline
-            </>
-          )}
-        </Button>
+
+        <div className="grid md:grid-cols-2 gap-3">
+          <input
+            value={owner}
+            onChange={(e) => onConfigChange("owner", e.target.value)}
+            placeholder="GitHub owner"
+            className="h-10 rounded-lg border border-border/50 bg-background/70 px-3 text-sm text-foreground"
+          />
+          <input
+            value={repo}
+            onChange={(e) => onConfigChange("repo", e.target.value)}
+            placeholder="Repository name"
+            className="h-10 rounded-lg border border-border/50 bg-background/70 px-3 text-sm text-foreground"
+          />
+          <input
+            value={branch}
+            onChange={(e) => onConfigChange("branch", e.target.value)}
+            placeholder="Base branch"
+            className="h-10 rounded-lg border border-border/50 bg-background/70 px-3 text-sm text-foreground"
+          />
+          <input
+            value={targetUrl}
+            onChange={(e) => onConfigChange("targetUrl", e.target.value)}
+            placeholder="Target URL"
+            className="h-10 rounded-lg border border-border/50 bg-background/70 px-3 text-sm text-foreground"
+          />
+          <input
+            value={slackChannel}
+            onChange={(e) => onConfigChange("slackChannel", e.target.value)}
+            placeholder="Slack channel (optional, e.g. #sentinelqa)"
+            className="h-10 rounded-lg border border-border/50 bg-background/70 px-3 text-sm text-foreground"
+          />
+          <select
+            value={githubMcpMode}
+            onChange={(e) => onConfigChange("githubMcpMode", e.target.value)}
+            className="h-10 rounded-lg border border-border/50 bg-background/70 px-3 text-sm text-foreground"
+          >
+            <option value="npx">GitHub MCP via npx</option>
+            <option value="docker">GitHub MCP via docker</option>
+          </select>
+        </div>
+
+        <div className="grid md:grid-cols-[1fr_auto] gap-3 items-center">
+          <input
+            value={prSearch}
+            onChange={(e) => onPrSearchChange(e.target.value)}
+            placeholder="Search open PRs by title, number, author, branch"
+            className="h-10 rounded-lg border border-border/50 bg-background/70 px-3 text-sm text-foreground"
+          />
+          <Button
+            type="button"
+            onClick={onRefreshPrs}
+            disabled={prsLoading || !owner || !repo}
+            variant="outline"
+            className="gap-2 border-border/50"
+          >
+            {prsLoading ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Loading PRs
+              </>
+            ) : (
+              <>
+                <RefreshCcw className="w-4 h-4" />
+                Load Open PRs
+              </>
+            )}
+          </Button>
+        </div>
+
+        {prsError ? (
+          <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+            {prsError}
+          </div>
+        ) : null}
+
+        <div className="rounded-xl border border-border/40 overflow-hidden">
+          <div className="max-h-64 overflow-y-auto divide-y divide-border/30">
+            {pullRequests.length === 0 && !prsLoading ? (
+              <div className="px-3 py-4 text-xs text-muted-foreground">
+                No open PRs loaded yet.
+              </div>
+            ) : (
+              pullRequests.map((pr) => (
+                <button
+                  key={pr.number}
+                  type="button"
+                  onClick={() => onSelectPr(pr.number)}
+                  className={`w-full text-left px-3 py-2.5 transition-colors ${selectedPrNumber === pr.number ? "bg-blue-500/20 border-l-2 border-blue-400" : "hover:bg-muted/30"}`}
+                >
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <span>PR #{pr.number}</span>
+                    <span>•</span>
+                    <span>{pr.author}</span>
+                    <span>•</span>
+                    <span>{pr.headRef} → {pr.baseRef}</span>
+                  </div>
+                  <div className="text-sm text-foreground truncate">{pr.title}</div>
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+
+        <p className="text-xs text-muted-foreground">
+          Selected PR: {selectedPrNumber ? `#${selectedPrNumber}` : "None"}
+        </p>
       </div>
-      <PipelineFlowViz stage={stage} agentStatuses={agentStatuses} />
+
+      <PipelineFlowViz stage={stage} agentStatuses={agentStatuses} terminalLines={terminalLines} />
     </div>
   );
 }
@@ -1831,6 +2233,27 @@ export default function DashboardPage() {
     courier: "Ready to notify…",
   });
   const [tests, setTests] = useState<TestResult[]>(INITIAL_TESTS);
+  const [owner, setOwner] = useState("Arpit529Srivastava");
+  const [repo, setRepo] = useState("Hack-karo");
+  const [branch, setBranch] = useState("main");
+  const [targetUrl, setTargetUrl] = useState("http://localhost:3000");
+  const [slackChannel, setSlackChannel] = useState("#sentinelqa");
+  const [githubMcpMode, setGithubMcpMode] = useState<"docker" | "npx">("npx");
+  const [prSearch, setPrSearch] = useState("");
+  const [openPrs, setOpenPrs] = useState<OpenPullRequest[]>([]);
+  const [selectedPrNumber, setSelectedPrNumber] = useState<number | null>(null);
+  const [prsLoading, setPrsLoading] = useState(false);
+  const [prsError, setPrsError] = useState("");
+  const [pipelineError, setPipelineError] = useState("");
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [sessionStatus, setSessionStatus] = useState<string | undefined>(undefined);
+  const [courierType, setCourierType] = useState<"pr" | "issue" | undefined>(undefined);
+
+  const { events: sessionEvents, clearEvents } = useSessionWebSocket(activeSessionId);
+  const processedEventCountRef = useRef(0);
+  const agentStatusesRef = useRef(agentStatuses);
+  const sessionStatusRef = useRef<string | undefined>(sessionStatus);
+  const courierTypeRef = useRef<"pr" | "issue" | undefined>(courierType);
 
   const addLines = useCallback((lines: TerminalLine[], offset = 0) => {
     lines.forEach((line, i) => {
@@ -1843,135 +2266,293 @@ export default function DashboardPage() {
     });
   }, []);
 
-  const runPipeline = useCallback(() => {
-    if (running) return;
+  const fetchPullRequests = useCallback(async () => {
+    if (!owner || !repo) return;
+
+    setPrsLoading(true);
+    setPrsError("");
+    try {
+      const query = new URLSearchParams({
+        owner,
+        repo,
+        state: "open",
+        github_mcp_mode: githubMcpMode,
+      });
+      if (prSearch.trim()) {
+        query.set("query", prSearch.trim());
+      }
+
+      const response = await fetch(`/api/agent/pull-requests?${query.toString()}`);
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data?.error ?? "Failed to load pull requests");
+      }
+
+      const prs = (data?.pull_requests ?? []) as OpenPullRequest[];
+      setOpenPrs(prs);
+      setSelectedPrNumber((prev) => {
+        if (prs.length === 0) return null;
+        const selectedStillExists = prev ? prs.some((pr) => pr.number === prev) : false;
+        return selectedStillExists ? prev : prs[0].number;
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to fetch pull requests";
+      setPrsError(message);
+      setOpenPrs([]);
+      setSelectedPrNumber(null);
+    } finally {
+      setPrsLoading(false);
+    }
+  }, [owner, repo, prSearch, githubMcpMode]);
+
+  useEffect(() => {
+    if (!owner || !repo) return;
+    void fetchPullRequests();
+  }, [fetchPullRequests, owner, repo]);
+
+  useEffect(() => {
+    agentStatusesRef.current = agentStatuses;
+  }, [agentStatuses]);
+
+  useEffect(() => {
+    sessionStatusRef.current = sessionStatus;
+  }, [sessionStatus]);
+
+  useEffect(() => {
+    courierTypeRef.current = courierType;
+  }, [courierType]);
+
+  useEffect(() => {
+    processedEventCountRef.current = 0;
+  }, [activeSessionId]);
+
+  useEffect(() => {
+    if (!activeSessionId || sessionEvents.length === 0) return;
+
+    const newEvents = sessionEvents.slice(processedEventCountRef.current);
+    if (newEvents.length === 0) return;
+    processedEventCountRef.current = sessionEvents.length;
+
+    const nextStatuses = { ...agentStatusesRef.current };
+    let nextSessionStatus = sessionStatusRef.current;
+    let nextCourierType = courierTypeRef.current;
+
+    for (const event of newEvents) {
+      if (event.name === "agent.started") {
+        const agent = mapEventAgentToFlowAgent((event.payload as any)?.agent_name);
+        if (agent) {
+          nextStatuses[agent] = "running";
+          const message = (event.payload as any)?.message;
+          if (typeof message === "string" && message.trim()) {
+            addLines([{ text: `[${agent.toUpperCase()}] ${message}`, type: "agent", ts: "" }], 0);
+          }
+        }
+      }
+
+      if (event.name === "agent.completed") {
+        const agent = mapEventAgentToFlowAgent((event.payload as any)?.agent_name);
+        if (agent) {
+          nextStatuses[agent] = "success";
+        }
+      }
+
+      if (event.name === "session.status_changed") {
+        const status = (event.payload as any)?.status;
+        if (typeof status === "string") {
+          nextSessionStatus = status;
+        }
+      }
+
+      if (event.name === "courier.pr_created") {
+        nextCourierType = "pr";
+        nextStatuses.courier = "success";
+      }
+
+      if (event.name === "courier.issue_created") {
+        nextCourierType = "issue";
+        nextStatuses.courier = "success";
+      }
+
+      if (event.name === "pipeline.completed") {
+        const status = (event.payload as any)?.status;
+        if (typeof status === "string") {
+          nextSessionStatus = status;
+        }
+      }
+    }
+
+    agentStatusesRef.current = nextStatuses;
+    sessionStatusRef.current = nextSessionStatus;
+    courierTypeRef.current = nextCourierType;
+
+    setAgentStatuses(nextStatuses);
+    setSessionStatus(nextSessionStatus);
+    setCourierType(nextCourierType);
+    setAgentTasks(buildAgentTasks(nextStatuses));
+    setStage(derivePipelineStage(nextStatuses, nextSessionStatus, nextCourierType));
+  }, [activeSessionId, sessionEvents, addLines]);
+
+  const runPipeline = useCallback(async () => {
+    if (running || !selectedPrNumber) return;
+
+    const selectedPr = openPrs.find((pr) => pr.number === selectedPrNumber);
+    if (!selectedPr) {
+      setPipelineError("Selected PR not found in loaded PR list.");
+      return;
+    }
+
+    setPipelineError("");
     setRunning(true);
+    const sessionId = `pipeline_${Date.now()}`;
+    clearEvents();
+    processedEventCountRef.current = 0;
+    setActiveSessionId(sessionId);
+    setSessionStatus("running");
+    setCourierType(undefined);
+    setStage("architect");
     setTerminalLines([]);
-    setTests(INITIAL_TESTS);
+    setTests(INITIAL_TESTS.map((t) => ({ ...t, status: "pending", duration: "—" })));
     setAgentStatuses({
-      architect: "idle",
+      architect: "running",
       scripter: "idle",
       watchdog: "idle",
       healer: "idle",
       courier: "idle",
     });
+    setAgentTasks({
+      architect: `Analyzing PR #${selectedPr.number}...`,
+      scripter: "Awaiting test plan…",
+      watchdog: "Monitoring metrics…",
+      healer: "On standby…",
+      courier: "Ready to notify…",
+    });
 
-    // Stage 1: Architect (0–3s)
-    setTimeout(() => {
-      setStage("architect");
-      setAgentStatuses((p) => ({ ...p, architect: "running" }));
-      setAgentTasks((p) => ({
-        ...p,
-        architect: "Analyzing repo: sentinelqa/frontend…",
+    addLines(
+      [
+        { text: `Pipeline triggered for ${owner}/${repo} PR #${selectedPr.number}`, type: "system", ts: "" },
+        { text: `Selected PR: ${selectedPr.title}`, type: "info", ts: "" },
+        { text: "Slack start notification queued...", type: "agent", ts: "" },
+      ],
+      0,
+    );
+
+    try {
+      const response = await fetch("/api/agent/pipeline", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          owner,
+          repo,
+          branch,
+          target_url: targetUrl,
+          github_mcp_mode: githubMcpMode,
+          selected_pr: {
+            number: selectedPr.number,
+            title: selectedPr.title,
+            url: selectedPr.url,
+          },
+          slack_channel: slackChannel,
+          session_id: sessionId,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data?.error ?? "Pipeline execution failed");
+      }
+
+      const results = data?.results;
+      const resultDetails = Array.isArray(results?.details) ? results.details : [];
+      const mappedTests: TestResult[] = resultDetails.slice(0, 14).map((test: any, index: number) => ({
+        id: index + 1,
+        name: String(test?.name ?? `Step ${index + 1}`),
+        flow: "Pipeline",
+        status: test?.status === "passed" ? "passed" : "failed",
+        duration: typeof test?.duration_ms === "number" ? `${(test.duration_ms / 1000).toFixed(1)}s` : "—",
+        error: test?.error ? String(test.error) : undefined,
       }));
-      addLines(STAGE_SCRIPTS.architect, 0);
-    }, 500);
+      if (mappedTests.length > 0) {
+        setTests(mappedTests);
+      }
 
-    // Stage 2: Scripter (3–8s)
-    setTimeout(() => {
-      setStage("scripter");
-      setAgentStatuses((p) => ({
-        ...p,
+      const finalStage: PipelineStage =
+        results?.failed > 0
+          ? data?.courier?.type === "issue"
+            ? "courier_issue"
+            : "courier_pr"
+          : "complete";
+      setStage(finalStage);
+      setAgentStatuses({
         architect: "success",
-        scripter: "running",
-      }));
-      setAgentTasks((p) => ({
-        ...p,
-        architect: "Generated 14-scenario test plan",
-        scripter: "Executing Playwright tests in headless Chromium…",
-      }));
-      addLines(STAGE_SCRIPTS.scripter, 0);
-    }, 3500);
+        scripter: results?.failed > 0 ? "error" : "success",
+        watchdog: results?.failed > 0 ? "success" : "idle",
+        healer: results?.failed > 0 ? "success" : "idle",
+        courier: "success",
+      });
+      setAgentTasks({
+        architect: `PR #${selectedPr.number} analyzed`,
+        scripter:
+          results?.failed > 0
+            ? `${results.failed} test(s) failed`
+            : `${results?.passed ?? 0} test(s) passed`,
+        watchdog: results?.failed > 0 ? "Anomalies analyzed" : "No anomalies",
+        healer: results?.failed > 0 ? "RCA prepared" : "No healing needed",
+        courier: "Slack + GitHub notifications completed",
+      });
 
-    // Tests start completing
-    setTimeout(() => {
-      setTests((prev) =>
-        prev.map((t, i) =>
-          i < 6 ? { ...t, status: "passed", duration: DURATIONS[i] } : t,
-        ),
+      addLines(
+        [
+          {
+            text: `Pipeline completed. Passed: ${results?.passed ?? 0}/${results?.total ?? 0}`,
+            type: results?.failed > 0 ? "warn" : "success",
+            ts: "",
+          },
+          {
+            text: results?.failed > 0
+              ? "Failure summary sent to Slack and remediation pipeline triggered."
+              : "Success summary sent to Slack.",
+            type: "agent",
+            ts: "",
+          },
+        ],
+        0,
       );
-    }, 5000);
-    setTimeout(() => {
-      setTests((prev) =>
-        prev.map((t, i) =>
-          i === 6 ? { ...t, status: "failed", duration: DURATIONS[i] } : t,
-        ),
-      );
-    }, 6500);
-    setTimeout(() => {
-      setTests((prev) =>
-        prev.map((t, i) =>
-          i > 6 ? { ...t, status: "passed", duration: DURATIONS[i] } : t,
-        ),
-      );
-    }, 7500);
-
-    // Stage 3: Watchdog (8–12s)
-    setTimeout(() => {
-      setStage("watchdog");
-      setAgentStatuses((p) => ({
-        ...p,
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Pipeline execution failed";
+      setPipelineError(message);
+      setStage("courier_issue");
+      setAgentStatuses((prev) => ({
+        ...prev,
+        architect: prev.architect === "running" ? "error" : prev.architect,
         scripter: "error",
-        watchdog: "running",
+        courier: "error",
       }));
-      setAgentTasks((p) => ({
-        ...p,
-        scripter: "1 failure — .checkout-btn selector not found",
-        watchdog: "Querying Prometheus/Grafana/Datadog for anomalies…",
+      setAgentTasks((prev) => ({
+        ...prev,
+        courier: "Failed to dispatch notifications",
       }));
-      addLines(STAGE_SCRIPTS.watchdog, 0);
-    }, 8500);
-
-    // Stage 4: Healer (12–17s)
-    setTimeout(() => {
-      setStage("healer");
-      setAgentStatuses((p) => ({
-        ...p,
-        watchdog: "success",
-        healer: "running",
-      }));
-      setAgentTasks((p) => ({
-        ...p,
-        watchdog: "DOM mutation found — class renamed in commit a3f9c2b",
-        healer: "Performing RCA — querying vector DB for similar failures…",
-      }));
-      addLines(STAGE_SCRIPTS.healer, 0);
-    }, 13000);
-
-    // Stage 5: Courier PR (17–21s)
-    setTimeout(() => {
-      setStage("courier_pr");
-      setAgentStatuses((p) => ({
-        ...p,
-        healer: "success",
-        courier: "running",
-      }));
-      setAgentTasks((p) => ({
-        ...p,
-        healer: "Fix generated — confidence 94% ✓",
-        courier: "Creating GitHub PR #47 and notifying Slack…",
-      }));
-      addLines(STAGE_SCRIPTS.courier_pr, 0);
-    }, 18000);
-
-    // Complete (21s)
-    setTimeout(() => {
-      setStage("complete");
-      setAgentStatuses((p) => ({ ...p, courier: "success" }));
-      setAgentTasks((p) => ({
-        ...p,
-        courier: "PR #47 created · Team notified on Slack",
-      }));
+      addLines([{ text: `Pipeline error: ${message}`, type: "error", ts: "" }], 0);
+    } finally {
       setRunning(false);
-    }, 21000);
-  }, [running, addLines]);
-
-  // Auto-run on mount
-  useEffect(() => {
-    const t = setTimeout(runPipeline, 1500);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+      setActiveSessionId(null);
+    }
+  }, [
+    running,
+    selectedPrNumber,
+    openPrs,
+    owner,
+    repo,
+    branch,
+    targetUrl,
+    githubMcpMode,
+    slackChannel,
+    addLines,
+    clearEvents,
+  ]);
 
   const TAB_TITLES: Record<Tab, string> = {
     overview: "Overview",
@@ -1982,6 +2563,17 @@ export default function DashboardPage() {
     rca: "RCA Reports",
     prs: "PR Tracker",
   };
+
+  const handleConfigChange = useCallback((field: string, value: string) => {
+    if (field === "owner") setOwner(value.trim());
+    if (field === "repo") setRepo(value.trim());
+    if (field === "branch") setBranch(value.trim());
+    if (field === "targetUrl") setTargetUrl(value.trim());
+    if (field === "slackChannel") setSlackChannel(value.trim());
+    if (field === "githubMcpMode") {
+      setGithubMcpMode(value === "docker" ? "docker" : "npx");
+    }
+  }, []);
 
   return (
     <div className="flex h-screen bg-background overflow-hidden">
@@ -2012,7 +2604,7 @@ export default function DashboardPage() {
             <Button
               size="sm"
               onClick={runPipeline}
-              disabled={running}
+              disabled={running || !selectedPrNumber || !owner || !repo || !targetUrl}
               className="glow-cyan bg-primary text-primary-foreground hover:bg-primary/90 gap-1.5 h-8 text-xs"
             >
               {running ? (
@@ -2052,6 +2644,12 @@ export default function DashboardPage() {
 
         {/* Page content */}
         <div className="flex-1 overflow-y-auto p-6">
+          {pipelineError ? (
+            <div className="mb-4 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-2 text-sm text-red-300">
+              {pipelineError}
+            </div>
+          ) : null}
+
           <AnimatePresence mode="wait">
             <motion.div
               key={activeTab}
@@ -2072,7 +2670,25 @@ export default function DashboardPage() {
               {activeTab === "pipeline" && (
                 <PipelineTab
                   stage={stage}
+                  terminalLines={terminalLines}
                   agentStatuses={agentStatuses}
+                  owner={owner}
+                  repo={repo}
+                  branch={branch}
+                  targetUrl={targetUrl}
+                  slackChannel={slackChannel}
+                  githubMcpMode={githubMcpMode}
+                  prSearch={prSearch}
+                  pullRequests={openPrs}
+                  selectedPrNumber={selectedPrNumber}
+                  prsLoading={prsLoading}
+                  prsError={prsError}
+                  onConfigChange={handleConfigChange}
+                  onPrSearchChange={setPrSearch}
+                  onRefreshPrs={() => {
+                    void fetchPullRequests();
+                  }}
+                  onSelectPr={setSelectedPrNumber}
                   onRun={runPipeline}
                   running={running}
                 />
@@ -2090,7 +2706,18 @@ export default function DashboardPage() {
                 </div>
               )}
               {activeTab === "rca" && <RcaTab stage={stage} />}
-              {activeTab === "prs" && <PrsTab />}
+              {activeTab === "prs" && (
+                <PrsTab
+                  pullRequests={openPrs}
+                  loading={prsLoading}
+                  error={prsError}
+                  selectedPrNumber={selectedPrNumber}
+                  onSelect={setSelectedPrNumber}
+                  onRefresh={() => {
+                    void fetchPullRequests();
+                  }}
+                />
+              )}
             </motion.div>
           </AnimatePresence>
         </div>

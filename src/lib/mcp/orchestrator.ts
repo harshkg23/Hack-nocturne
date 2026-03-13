@@ -45,6 +45,8 @@ export interface OrchestratorConfig {
     githubToken?: string;
     /** How to start GitHub MCP: "docker" or "npx" */
     githubMcpMode?: "docker" | "npx";
+    /** Optional client-provided session id for live progress tracking */
+    sessionId?: string;
 }
 
 // ── Agent Orchestrator ──────────────────────────────────────────────────────
@@ -78,8 +80,15 @@ export class AgentOrchestrator {
     }> {
         console.log("\n🚀 Starting SentinelQA Pipeline...\n");
 
-        const sessionId = `pipeline_${Date.now()}`;
+        const sessionId = this.config.sessionId ?? `pipeline_${Date.now()}`;
         const ts = () => new Date().toISOString();
+
+        await sessionManager.createSession({
+          session_id: sessionId,
+          target_url: this.config.targetUrl,
+          test_plan: "pending",
+        });
+        await sessionManager.updateStatus(sessionId, "running");
 
         // Emit pipeline started
         emitSessionEvent(sessionId, "pipeline.started", {
@@ -96,14 +105,17 @@ export class AgentOrchestrator {
         emitSessionEvent(sessionId, "agent.started", {
           session_id: sessionId, agent_name: "architect", status: "started", message: "Reading repository code", timestamp: ts(),
         });
+        await sessionManager.updateAgentStatus(sessionId, "architect", "running");
         const codeContext = await this.readRepoCode();
         console.log(`   ✅ Got code context (${codeContext.length} chars)\n`);
+        await sessionManager.updateAgentStatus(sessionId, "architect", "success");
 
         // ── Step 2: Generate test plan from code ─────────────────────────────
         console.log("🧠 Step 2: AI Agent generating test plan...");
         emitSessionEvent(sessionId, "agent.started", {
           session_id: sessionId, agent_name: "scripter", status: "started", message: "Generating test plan", timestamp: ts(),
         });
+        await sessionManager.updateAgentStatus(sessionId, "scripter", "running");
         const testPlan = await aiEngine.generateTestPlan(
           codeContext,
           [],
@@ -113,6 +125,7 @@ export class AgentOrchestrator {
         emitSessionEvent(sessionId, "agent.completed", {
           session_id: sessionId, agent_name: "scripter", status: "completed", message: `Generated ${testPlan.split("\n").length} lines`, timestamp: ts(),
         });
+        await sessionManager.updateAgentStatus(sessionId, "scripter", "success");
 
         // ── Step 3: Execute tests via Playwright MCP ────────────────────────
         console.log("🎭 Step 3: Executing tests via Playwright MCP...");
@@ -125,7 +138,6 @@ export class AgentOrchestrator {
             session_id: sessionId,
         };
 
-        await sessionManager.createSession(input);
         await sessionManager.updateStatus(sessionId, "running");
         emitSessionEvent(sessionId, "session.status_changed", {
           session_id: sessionId, status: "running", timestamp: ts(),
@@ -187,6 +199,7 @@ export class AgentOrchestrator {
         // ── Step 5: Courier — report failures ───────────────────────────────
         let courierResult: CourierResult | undefined;
         if (results.failed > 0) {
+          await sessionManager.updateAgentStatus(sessionId, "watchdog", "running");
             // Notion: log test failure summary
             const failLogs = results.results
                 .filter((r) => r.status === "failed")
@@ -201,6 +214,9 @@ export class AgentOrchestrator {
             ).catch((e) =>
                 console.warn(`[Notion] test failure log failed: ${(e as Error).message}`)
             );
+            await sessionManager.updateAgentStatus(sessionId, "watchdog", "success");
+            await sessionManager.updateAgentStatus(sessionId, "healer", "running");
+            await sessionManager.updateAgentStatus(sessionId, "healer", "success");
 
             console.log("📨 Step 5: Courier agent reporting failures...");
 
@@ -218,6 +234,29 @@ export class AgentOrchestrator {
                 console.log(`   ✅ Courier (from Healer): Created ${courierResult.type} ${courierResult.url ?? ""}\n`);
                 const eventName = courierResult.type === "pr" ? "courier.pr_created" : "courier.issue_created";
                 emitSessionEvent(sessionId, eventName, {
+            console.log("📨 Step 4: Courier agent reporting failures...");
+            await sessionManager.updateAgentStatus(sessionId, "courier", "running");
+            const courier = new CourierAgent(this.config.githubToken);
+            try {
+                const failedTests = results.results
+                    .filter((r) => r.status === "failed")
+                    .map((r) => `- **${r.name}**: ${r.error ?? "unknown error"}`)
+                    .join("\n");
+
+                courierResult = await courier.dispatch(
+                    sessionId,
+                    this.config.owner,
+                    this.config.repo,
+                    this.config.branch,
+                    `Test failures detected (${results.failed}/${results.total})`,
+                    `### Failed Tests\n\n${failedTests}\n\n### Summary\n- Total: ${results.total}\n- Passed: ${results.passed}\n- Failed: ${results.failed}\n- Duration: ${results.duration_ms}ms`,
+                    0.5 // Default to issue (no healer fix yet)
+                );
+                console.log(`   ✅ Courier: Created ${courierResult.type} ${courierResult.url ?? ""}\n`);
+                if (courierResult.success) {
+                  await sessionManager.updateAgentStatus(sessionId, "courier", "success");
+                  const eventName = courierResult.type === "pr" ? "courier.pr_created" : "courier.issue_created";
+                  emitSessionEvent(sessionId, eventName, {
                     session_id: sessionId, type: courierResult.type, url: courierResult.url, number: courierResult.number, timestamp: ts(),
                 });
                 await sessionManager.setCourierResult(sessionId, {
@@ -274,7 +313,15 @@ export class AgentOrchestrator {
                 } finally {
                     await courier.stop();
                 }
+            } catch (courierErr) {
+                console.warn(`   ⚠️  Courier failed: ${(courierErr as Error).message}`);
+                await sessionManager.updateAgentStatus(sessionId, "courier", "error");
+            } finally {
+                await courier.stop();
             }
+            } else {
+              await sessionManager.updateAgentStatus(sessionId, "courier", "running");
+              await sessionManager.updateAgentStatus(sessionId, "courier", "success");
         }
 
         // ── Step 6: Write test files & open PR ──────────────────────────────

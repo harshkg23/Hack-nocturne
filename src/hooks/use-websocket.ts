@@ -30,47 +30,64 @@ export function useSessionWebSocket(sessionId: string | null) {
   useEffect(() => {
     if (!sessionId) return;
 
-    const socket = io({
-      path: "/api/ws",
-      transports: ["websocket", "polling"],
-    });
+    setEvents([]);
 
-    socketRef.current = socket;
+    let cancelled = false;
 
-    socket.on("connect", () => {
-      setConnected(true);
-      socket.emit("join_session", { session_id: sessionId });
-    });
+    const connect = async () => {
+      try {
+        await fetch("/api/ws", { method: "GET", cache: "no-store" });
+      } catch {
+        // Socket server bootstrap may fail transiently during startup.
+      }
 
-    socket.on("disconnect", () => setConnected(false));
+      if (cancelled) return;
 
-    // Listen to all SentinelQA event types
-    const eventNames: WSEventName[] = [
-      "session.status_changed",
-      "agent.started",
-      "agent.completed",
-      "test.progress",
-      "test.failed",
-      "healing.started",
-      "healing.completed",
-      "courier.pr_created",
-      "courier.issue_created",
-      "pipeline.started",
-      "pipeline.completed",
-    ];
-
-    for (const name of eventNames) {
-      socket.on(name, (payload: WSEventPayload) => {
-        setEvents((prev) => [
-          ...prev,
-          { name, payload, receivedAt: new Date().toISOString() },
-        ]);
+      const socket = io({
+        path: "/api/ws",
+        transports: ["websocket", "polling"],
       });
-    }
+
+      socketRef.current = socket;
+
+      socket.on("connect", () => {
+        setConnected(true);
+        socket.emit("join_session", { session_id: sessionId });
+      });
+
+      socket.on("disconnect", () => setConnected(false));
+
+      // Listen to all SentinelQA event types
+      const eventNames: WSEventName[] = [
+        "session.status_changed",
+        "agent.started",
+        "agent.completed",
+        "test.progress",
+        "test.failed",
+        "healing.started",
+        "healing.completed",
+        "courier.pr_created",
+        "courier.issue_created",
+        "pipeline.started",
+        "pipeline.completed",
+      ];
+
+      for (const name of eventNames) {
+        socket.on(name, (payload: WSEventPayload) => {
+          setEvents((prev) => [
+            ...prev,
+            { name, payload, receivedAt: new Date().toISOString() },
+          ]);
+        });
+      }
+    };
+
+    void connect();
 
     return () => {
-      socket.emit("leave_session", { session_id: sessionId });
-      socket.disconnect();
+      cancelled = true;
+      socketRef.current?.emit("leave_session", { session_id: sessionId });
+      socketRef.current?.disconnect();
       socketRef.current = null;
     };
   }, [sessionId]);
