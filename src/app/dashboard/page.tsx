@@ -176,7 +176,6 @@ const AGENTS = [
     id: "architect",
     name: "THE ARCHITECT",
     role: "Planner",
-    owner: "Aaskar",
     icon: <Brain className="w-5 h-5" />,
     color: "#A855F7",
     ring: "ring-purple-500/40",
@@ -196,7 +195,6 @@ const AGENTS = [
     id: "scripter",
     name: "THE SCRIPTER",
     role: "Playwright MCP",
-    owner: "Harsh & Himanshu",
     icon: <Zap className="w-5 h-5" />,
     color: "#22D3EE",
     ring: "ring-cyan-500/40",
@@ -213,30 +211,9 @@ const AGENTS = [
     ],
   },
   {
-    id: "watchdog",
-    name: "THE WATCHDOG",
-    role: "SRE Monitor",
-    owner: "Arpit",
-    icon: <Eye className="w-5 h-5" />,
-    color: "#F59E0B",
-    ring: "ring-amber-500/40",
-    border: "border-amber-500/30",
-    bg: "bg-amber-500/10",
-    text: "text-amber-400",
-    description:
-      "Queries Prometheus/Grafana logs for infrastructure anomalies on test failure",
-    capabilities: [
-      "Prometheus metrics",
-      "Grafana dashboards",
-      "Log analysis",
-      "Anomaly detection",
-    ],
-  },
-  {
     id: "healer",
     name: "THE HEALER",
     role: "Debugger",
-    owner: "Aaskar",
     icon: <Wrench className="w-5 h-5" />,
     color: "#10B981",
     ring: "ring-emerald-500/40",
@@ -256,7 +233,6 @@ const AGENTS = [
     id: "courier",
     name: "THE COURIER",
     role: "Notifications",
-    owner: "Arpit",
     icon: <Send className="w-5 h-5" />,
     color: "#3B82F6",
     ring: "ring-blue-500/40",
@@ -968,7 +944,7 @@ function AgentMiniCard({
         {agent.name}
       </p>
       <p className="text-[10px] text-muted-foreground mb-2">
-        {agent.role} · {agent.owner}
+        {agent.role}
       </p>
       <p className="text-xs text-foreground/70 leading-relaxed line-clamp-2">
         {task || "Waiting for instructions…"}
@@ -1213,6 +1189,7 @@ function PipelineFlowViz({
           <VConn active={scripterToDecisionActive} />
           <Diamond label={"Tests\nPass?"} active={stage !== "idle"} />
 
+          {/* YES / NO fork */}
           {/* YES / NO fork */}
           <div className="w-full flex justify-around items-start gap-4 mt-1">
             {/* ── YES PATH ── */}
@@ -1572,11 +1549,7 @@ function AgentsTab({
               {agent.name}
             </h3>
             <p className="text-xs text-muted-foreground mb-1">{agent.role}</p>
-            <div
-              className={`inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full ${agent.bg} ${agent.text} mb-3`}
-            >
-              Owner: {agent.owner}
-            </div>
+
 
             <p className="text-xs text-foreground/60 leading-relaxed mb-4">
               {agent.description}
