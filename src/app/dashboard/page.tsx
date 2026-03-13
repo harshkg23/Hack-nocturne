@@ -736,7 +736,7 @@ function Sidebar({
             <span className="relative inline-flex rounded-full h-2 w-2 bg-secondary" />
           </span>
           <span className="text-xs text-secondary font-medium">
-            Agents Online · 5/5
+            Agents Offline · 5/5
           </span>
         </div>
 
