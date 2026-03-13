@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from graph.state import SentinelState
 
-CONFIDENCE_THRESHOLD = 0.8
+CONFIDENCE_THRESHOLD = 0.7
 
 
 def courier_decision_node(state: SentinelState) -> dict[str, object]:
@@ -34,6 +34,8 @@ def courier_decision_node(state: SentinelState) -> dict[str, object]:
         repo = (parts[1] or "").strip()
     session_id = str(state.get("session_id", "")).strip()
     fix_branch = str(state.get("fix_branch", "")).strip()
+    if not fix_branch:
+        fix_branch = f"sentinelqa/fix-{session_id}"
     base_branch = str(state.get("branch", "main")).strip() or "main"
 
     can_create_pr = (

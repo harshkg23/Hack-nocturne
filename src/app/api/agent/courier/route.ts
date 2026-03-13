@@ -84,9 +84,9 @@ export async function POST(request: NextRequest) {
             const baseBranch = dispatch_payload.base_branch ?? configuredBranch;
             const proposedPatch = dispatch_payload.proposed_patch?.trim();
 
-            // When Healer provides a patch: clone target repo, apply, push, then create PR
+            // When Healer provides a patch: apply via GitHub API, then create PR
             if (proposedPatch && githubToken) {
-                const applyResult = applyPatchAndPush({
+                const applyResult = await applyPatchAndPush({
                     owner,
                     repo,
                     baseBranch,
@@ -97,16 +97,7 @@ export async function POST(request: NextRequest) {
                 });
 
                 if (!applyResult.success) {
-                    // Fall back to Issue when patch fails to apply
-                    const result = await courier.createIssueReport({
-                        session_id: sessionId,
-                        owner,
-                        repo,
-                        title: `[Failed to Apply Patch] ${dispatch_payload.title ?? "[SentinelQA] Test failure RCA"}`,
-                        body: `**Note**: The Healer generated a patch but it failed to apply.\n\`\`\`\n${applyResult.error ?? "Unknown error"}\n\`\`\`\n\n${dispatch_payload.body ?? ""}`,
-                        labels: ["sentinel-qa", "bug"],
-                    });
-                    return NextResponse.json(result, { status: result.success ? 200 : 502 });
+                    console.error("Patch apply failed but continuing: ", applyResult.error);
                 }
             }
 

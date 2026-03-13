@@ -619,6 +619,11 @@ export class AgentOrchestrator {
      * Fetch recent diff from the target repo via GitHub API.
      * Uses the last commit vs its parent so the Healer gets real code context.
      */
+    /**
+     * Fetch recent diff from the target repo via GitHub API.
+     * Compares HEAD vs ~10 commits back to catch intentional breakages even if
+     * more recent commits (e.g. test files, AI-engine tweaks) have been pushed.
+     */
     private async getTargetRepoDiff(): Promise<{ diff: string; changedFiles: string[] }> {
         const token = this.config.githubToken ?? process.env.GITHUB_PERSONAL_ACCESS_TOKEN ?? process.env.GITHUB_PAT;
         const { owner, repo, branch } = this.config;
@@ -626,8 +631,10 @@ export class AgentOrchestrator {
 
         try {
             const branchRef = branch || "main";
+            // Fetch last 10 commits so we capture the intentional breakage
+            // even when later commits (test files, AI-engine tweaks) are on top.
             const commitsRes = await fetch(
-                `https://api.github.com/repos/${owner}/${repo}/commits?sha=${branchRef}&per_page=2`,
+                `https://api.github.com/repos/${owner}/${repo}/commits?sha=${branchRef}&per_page=10`,
                 {
                     headers: {
                         Authorization: `Bearer ${token}`,
@@ -640,12 +647,12 @@ export class AgentOrchestrator {
             const commits = (await commitsRes.json()) as Array<{ sha: string; parents?: Array<{ sha: string }> }>;
             if (!commits?.length) return { diff: "", changedFiles: [] };
 
+            // Compare HEAD (newest) vs oldest among the fetched commits
             const headSha = commits[0].sha;
-            const parentSha = commits[0].parents?.[0]?.sha;
-            if (!parentSha) return { diff: "", changedFiles: [] };
+            const baseSha = commits[commits.length - 1].parents?.[0]?.sha ?? commits[commits.length - 1].sha;
 
             const compareRes = await fetch(
-                `https://api.github.com/repos/${owner}/${repo}/compare/${parentSha}...${headSha}`,
+                `https://api.github.com/repos/${owner}/${repo}/compare/${baseSha}...${headSha}`,
                 {
                     headers: {
                         Authorization: `Bearer ${token}`,
@@ -657,7 +664,7 @@ export class AgentOrchestrator {
             const diff = (await compareRes.text()).trim();
 
             const filesRes = await fetch(
-                `https://api.github.com/repos/${owner}/${repo}/compare/${parentSha}...${headSha}`,
+                `https://api.github.com/repos/${owner}/${repo}/compare/${baseSha}...${headSha}`,
                 {
                     headers: {
                         Authorization: `Bearer ${token}`,
@@ -670,6 +677,7 @@ export class AgentOrchestrator {
                 const data = (await filesRes.json()) as { files?: Array<{ filename: string }> };
                 changedFiles = (data.files ?? []).map((f) => f.filename);
             }
+            console.log(`[Diff] ${commits.length} commits (${baseSha.substring(0,7)}...${headSha.substring(0,7)}), ${changedFiles.length} files changed`);
             return { diff, changedFiles };
         } catch {
             return { diff: "", changedFiles: [] };

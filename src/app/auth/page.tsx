@@ -101,6 +101,7 @@ function OAuthButton({
 
 function AuthPageContent() {
   const searchParams = useSearchParams();
+  const [tab, setTab] = useState<"login" | "signup">("login");
   const callbackUrl = searchParams.get("callbackUrl") ?? "/";
   const urlError = searchParams.get("error");
 
@@ -207,7 +208,7 @@ function AuthPageContent() {
                     ${tab === t ? "text-primary" : "text-muted-foreground hover:text-foreground"}
                   `}
                 >
-                  {t === "login" ? "Sign-In-Broken" : "Sign Up"}
+                  {t === "login" ? "Sign In" : "Sign Up"}
                 </button>
               ))}
             </div>

@@ -7,13 +7,14 @@ from typing import Any
 
 from graph.state import SentinelState
 from llm.client import get_healer_llm, get_provider, is_real_only_mode
+from memory.retriever import get_similar_past_fixes
 
 HEALER_SYSTEM_PROMPT = dedent(
     """
     You are a senior software debugging agent for SentinelQA.
     You will receive:
     1. Failed browser test outputs
-    2. Recent code-change context
+    2. Recent code-change history (a git diff showing what CHANGED recently)
     3. Accessibility snapshots of the UI
 
     Output strict JSON with these keys only:
@@ -32,9 +33,21 @@ HEALER_SYSTEM_PROMPT = dedent(
     - prefer the most likely root cause
     - identify whether this is most likely a test issue, UI regression, selector mismatch, timing issue, or backend problem
     - propose the smallest possible code or test change
-    - proposed_patch must be a minimal unified diff when you can infer a concrete file-level fix
-    - if you cannot infer a safe patch, set proposed_patch to an empty string
-    - fix_branch must be a short, descriptive git branch name for the fix (e.g. fix/dashboard-selectors) if a patch is proposed, or empty otherwise
+    - CRITICAL: The git diff shows what was RECENTLY CHANGED (+ lines added, - lines removed).
+      If those changes CAUSED the test failures, your proposed_patch must REVERT them:
+      flip every '+' line to '-' and every '-' line to '+' to undo the regression.
+      The patch must apply cleanly to the CURRENT file state (which already has the '+' lines from the diff).
+    - proposed_patch must ALWAYS be a minimal unified diff. Use the exact format:
+        diff --git a/path b/path
+        --- a/path
+        +++ b/path
+        @@ -LINE,COUNT +LINE,COUNT @@
+         context line
+        -line to remove (the CURRENT broken line)
+        +line to add (the CORRECTED line)
+         context line
+      Make sure the hunk header line numbers match the CURRENT file state precisely.
+    - fix_branch must be a short, descriptive git branch name for the fix (e.g. fix/revert-agents-offline)
     - target_files must be a JSON array of the most relevant file paths to inspect or patch
     - use the failure output, snapshots, changed files, and repo information provided
     """
@@ -203,6 +216,21 @@ def healer_node(state: SentinelState) -> dict[str, object]:
             )
         return _mock_healer(state, failures)
 
+    past_fixes = get_similar_past_fixes(
+        git_diff=state.get('git_diff', ''),
+        changed_files=state.get('changed_files', []),
+        failed_tests=failures,
+        top_k=3
+    )
+
+    memory_context = ""
+    if past_fixes:
+        memory_context = "\nSimilar Past Fixes (from Vector DB):\n"
+        for idx, fix in enumerate(past_fixes, 1):
+            memory_context += f"--- Past Fix {idx} ---\nOriginal Error: {fix.get('original_error', 'N/A')}\nResolution: {fix.get('resolution', fix.get('patch', 'N/A'))}\n"
+    else:
+        memory_context = "\nNo similar past fixes found in Vector DB."
+
     user_prompt = dedent(
         f"""
         Repo: {state.get('repo_url', '')}
@@ -214,6 +242,7 @@ def healer_node(state: SentinelState) -> dict[str, object]:
 
         Failed execution summary:
         {_failure_context(failures)}
+        {memory_context}
 
         Return strict JSON only.
         """
