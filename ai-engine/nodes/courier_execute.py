@@ -9,6 +9,7 @@ from urllib import error, request
 from dotenv import load_dotenv
 
 from graph.state import SentinelState
+from memory.store import store_successful_fix
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
@@ -87,8 +88,16 @@ def courier_execute_node(state: SentinelState) -> dict[str, object]:
             },
         }
 
-    return {
+    result = {
         "dispatch_result_type": data.get("type"),
         "dispatch_result_url": data.get("url"),
         "dispatch_result_number": data.get("number"),
     }
+
+    if data.get("type") == "pr":
+        try:
+            store_successful_fix(state)
+        except Exception:  # noqa: BLE001
+            pass
+
+    return result
