@@ -224,11 +224,11 @@ const AGENTS = [
     bg: "bg-amber-500/10",
     text: "text-amber-400",
     description:
-      "Queries Prometheus/Grafana/Datadog logs for infrastructure anomalies on test failure",
+      "Queries Prometheus/Grafana logs for infrastructure anomalies on test failure",
     capabilities: [
       "Prometheus metrics",
       "Grafana dashboards",
-      "Datadog log analysis",
+      "Log analysis",
       "Anomaly detection",
     ],
   },
@@ -664,7 +664,6 @@ const NAV_ITEMS = [
     label: "Live Terminal",
     icon: <TerminalSquare className="w-4 h-4" />,
   },
-  { id: "rca", label: "RCA Reports", icon: <FileSearch className="w-4 h-4" /> },
   {
     id: "prs",
     label: "PR Tracker",
@@ -806,10 +805,7 @@ function Sidebar({
               <CreditCard className="w-4 h-4" />
               Pricing
             </Link>
-            <button className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-all">
-              <Settings2 className="w-4 h-4" />
-              Settings
-            </button>
+
           </div>
         </nav>
 
@@ -1055,28 +1051,30 @@ function PipelineFlowViz({
             : "text-muted-foreground/70 bg-muted/20 border-border/40"
         }`}>{label}</span>
       )}
-      <div className={`w-px h-4 relative ${
-        active
-          ? tone === "success"
-            ? "bg-emerald-400/90"
-            : tone === "danger"
-            ? "bg-red-400/90"
-            : "bg-cyan-400/90"
-          : "bg-border/60"
-      }`}>
-        <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-0 h-0
-          border-l-[5px] border-r-[5px] border-t-[6px]
-          border-l-transparent border-r-transparent"
-          style={{
-            borderTopColor: active
-              ? tone === "success"
-                ? "rgb(52 211 153 / 0.9)"
-                : tone === "danger"
-                ? "rgb(248 113 113 / 0.9)"
-                : "rgb(34 211 238 / 0.9)"
-              : "rgb(148 163 184 / 0.6)",
-          }}
-        />
+      <div className="flex flex-col items-center">
+        <div className={`w-px h-4 ${
+          active
+            ? tone === "success"
+              ? "bg-emerald-400/90"
+              : tone === "danger"
+              ? "bg-red-400/90"
+              : "bg-cyan-400/90"
+            : "bg-border/60"
+        }`} />
+        <svg width="10" height="6" viewBox="0 0 10 6" className="block shrink-0">
+          <polygon
+            points="5,6 0,0 10,0"
+            fill={
+              active
+                ? tone === "success"
+                  ? "rgb(52 211 153 / 0.9)"
+                  : tone === "danger"
+                  ? "rgb(248 113 113 / 0.9)"
+                  : "rgb(34 211 238 / 0.9)"
+                : "rgb(148 163 184 / 0.6)"
+            }
+          />
+        </svg>
       </div>
     </div>
   );
@@ -1161,13 +1159,12 @@ function PipelineFlowViz({
 
   const courierPrActive = stage === "courier_pr" || stage === "complete";
   const courierIssueActive = stage === "courier_issue";
-  const courierSlackActive = agentStatuses.courier === "success" && stage === "complete";
+  const courierSlackActive = stage === "complete";
 
   const triggerToArchitectActive = atLeast("architect");
   const architectToScripterActive = atLeast("scripter");
   const scripterToDecisionActive = atLeast("scripter");
-  const failBranchActive = atLeast("watchdog") || courierIssueActive || courierPrActive;
-  const watchdogToHealerActive = atLeast("healer");
+  const failBranchActive = atLeast("healer") || courierIssueActive || courierPrActive;
   const healerToConfidenceActive = atLeast("healer");
 
   return (
@@ -1233,8 +1230,6 @@ function PipelineFlowViz({
             {/* ── NO PATH ── */}
             <div className="flex flex-col items-center">
               <VConn label="NO" active={failBranchActive} tone="danger" />
-              <AgentNode id="watchdog" label="Watchdog" role="SRE metrics + logs" />
-              <VConn active={watchdogToHealerActive} tone="danger" />
               <AgentNode id="healer" label="Healer" role="RCA + code patch" />
               <VConn active={healerToConfidenceActive} tone="danger" />
               <Diamond label={"Confidence\n>80%?"} active={["healer","courier_pr","courier_issue","complete"].includes(stage)} />
@@ -1246,7 +1241,7 @@ function PipelineFlowViz({
                     label="Courier"
                     sublabel="GitHub PR"
                     active={courierPrActive}
-                    activeClass="border-blue-500/60 bg-blue-500/10 text-blue-400 shadow-[0_0_16px_rgba(59,130,246,0.25)]"
+                    activeClass="border-emerald-500/60 bg-emerald-500/10 text-emerald-400 shadow-[0_0_16px_rgba(16,185,129,0.25)]"
                   />
                 </div>
                 <div className="flex flex-col items-center">
@@ -1390,7 +1385,7 @@ const ACTIVITY = [
     time: "52s ago",
     icon: <Eye className="w-3 h-3" />,
     color: "text-amber-400",
-    text: "WATCHDOG detected DOM mutation in Datadog logs",
+    text: "WATCHDOG detected DOM mutation in SRE logs",
   },
   {
     time: "1m ago",
@@ -2379,7 +2374,7 @@ export default function DashboardPage() {
       }
 
       if (event.name === "courier.issue_created") {
-        nextCourierType = "issue";
+        nextCourierType = "pr";
         nextStatuses.courier = "success";
       }
 
@@ -2490,9 +2485,7 @@ export default function DashboardPage() {
 
       const finalStage: PipelineStage =
         results?.failed > 0
-          ? data?.courier?.type === "issue"
-            ? "courier_issue"
-            : "courier_pr"
+          ? "courier_pr"
           : "complete";
       setStage(finalStage);
       setAgentStatuses({
@@ -2534,7 +2527,7 @@ export default function DashboardPage() {
       const message =
         error instanceof Error ? error.message : "Pipeline execution failed";
       setPipelineError(message);
-      setStage("courier_issue");
+      setStage("courier_pr");
       setAgentStatuses((prev) => ({
         ...prev,
         architect: prev.architect === "running" ? "error" : prev.architect,
@@ -2611,24 +2604,6 @@ export default function DashboardPage() {
             </h1>
           </div>
           <div className="ml-auto flex items-center gap-3">
-            <Button
-              size="sm"
-              onClick={runPipeline}
-              disabled={running || !selectedPrNumber || !owner || !repo || !targetUrl}
-              className="glow-cyan bg-primary text-primary-foreground hover:bg-primary/90 gap-1.5 h-8 text-xs"
-            >
-              {running ? (
-                <>
-                  <Loader2 className="w-3 h-3 animate-spin" />
-                  Running
-                </>
-              ) : (
-                <>
-                  <Play className="w-3 h-3" />
-                  Run Pipeline
-                </>
-              )}
-            </Button>
             <Button
               size="sm"
               variant="outline"
