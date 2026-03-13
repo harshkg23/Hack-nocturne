@@ -251,8 +251,17 @@ def healer_node(state: SentinelState) -> dict[str, object]:
         top_k=3
     )
 
+    rag_healer_matches = len(past_fixes)
+    rag_healer_insights = ""
+
     memory_context = ""
     if past_fixes:
+        rca_types_found = [f.get("rca_type", "unknown") for f in past_fixes if f.get("rca_type")]
+        rag_healer_insights = (
+            f"Found {rag_healer_matches} similar past fix(es) from RAG. "
+            f"RCA types: {', '.join(rca_types_found) or 'N/A'}. "
+            f"Using these insights to improve fix quality."
+        )
         memory_context = "\nSimilar Past Fixes (from Vector DB):\n"
         for idx, fix in enumerate(past_fixes, 1):
             rca = fix.get("rca_report", "") or fix.get("rca_type", "N/A")
@@ -315,6 +324,11 @@ def healer_node(state: SentinelState) -> dict[str, object]:
         """
     ).strip()
 
+    rag_meta = {
+        "rag_healer_matches": rag_healer_matches,
+        "rag_healer_insights": rag_healer_insights,
+    }
+
     try:
         response = llm.invoke(
             [
@@ -323,7 +337,9 @@ def healer_node(state: SentinelState) -> dict[str, object]:
             ]
         )
         content = response.content if isinstance(response.content, str) else str(response.content)
-        return _parse_response(content)
+        result = _parse_response(content)
+        result.update(rag_meta)
+        return result
     except Exception as err:
         if is_real_only_mode():
             raise RuntimeError(
@@ -333,4 +349,5 @@ def healer_node(state: SentinelState) -> dict[str, object]:
         fallback["rca_report"] = (
             f"{fallback['rca_report']} Healer LLM fallback triggered for provider '{provider}': {err.__class__.__name__}."
         )
+        fallback.update(rag_meta)
         return fallback

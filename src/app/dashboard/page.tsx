@@ -61,6 +61,12 @@ type Tab =
   | "terminal"
   | "rca"
   | "prs";
+
+interface RagInsight {
+  agent: string;
+  message: string;
+  timestamp: string;
+}
 type PipelineStage =
   | "idle"
   | "architect"
@@ -73,7 +79,7 @@ type PipelineStage =
 
 interface TerminalLine {
   text: string;
-  type: "info" | "success" | "error" | "warn" | "agent" | "system";
+  type: "info" | "success" | "error" | "warn" | "agent" | "system" | "rag";
   ts: string;
 }
 
@@ -953,6 +959,46 @@ function AgentMiniCard({
   );
 }
 
+// ─── RAG Insight Banner ───────────────────────────────────────────────────────
+
+function RagInsightBanner({ insights }: { insights: RagInsight[] }) {
+  if (insights.length === 0) return null;
+
+  return (
+    <div className="space-y-2">
+      {insights.map((insight, i) => (
+        <motion.div
+          key={i}
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3, delay: i * 0.1 }}
+          className="rounded-xl border border-violet-500/40 bg-violet-500/10 px-4 py-3 flex items-start gap-3"
+        >
+          <div className="w-8 h-8 rounded-lg bg-violet-500/20 border border-violet-500/40 flex items-center justify-center shrink-0 mt-0.5">
+            <Database className="w-4 h-4 text-violet-400" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 mb-0.5">
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-violet-500/20 text-violet-300 border border-violet-500/30">
+                RAG INSIGHT
+              </span>
+              <span className="text-[10px] text-violet-400/70 font-medium">
+                {insight.agent}
+              </span>
+              <span className="text-[10px] text-muted-foreground/50 ml-auto">
+                {insight.timestamp}
+              </span>
+            </div>
+            <p className="text-xs text-violet-200/90 leading-relaxed">
+              {insight.message}
+            </p>
+          </div>
+        </motion.div>
+      ))}
+    </div>
+  );
+}
+
 // ─── Pipeline Flow Visualization ──────────────────────────────────────────────
 
 function PipelineFlowViz({
@@ -1110,6 +1156,7 @@ function PipelineFlowViz({
     error:   "text-red-400",
     warn:    "text-amber-400",
     agent:   "text-cyan-400",
+    rag:     "text-violet-400 font-semibold",
   };
 
   const playwrightPassed = terminalLines.filter(
@@ -1275,7 +1322,7 @@ function PipelineFlowViz({
                   initial={{ opacity: 0, x: 6 }}
                   animate={{ opacity: 1, x: 0 }}
                   transition={{ duration: 0.2 }}
-                  className="flex gap-2"
+                  className={`flex gap-2 ${line.type === "rag" ? "bg-violet-500/10 rounded px-1.5 py-0.5 border-l-2 border-violet-500/50" : ""}`}
                 >
                   <span className="text-muted-foreground/30 shrink-0 tabular-nums">{line.ts}</span>
                   <span className={logColor[line.type] ?? "text-foreground/60"}>{line.text}</span>
@@ -1297,13 +1344,14 @@ function LiveTerminalPanel({ lines }: { lines: TerminalLine[] }) {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [lines]);
 
-  const colorMap = {
+  const colorMap: Record<string, string> = {
     system: "text-primary",
     info: "text-foreground/70",
     success: "text-emerald-400",
     error: "text-red-400",
     warn: "text-amber-400",
     agent: "text-cyan-400",
+    rag: "text-violet-400 font-semibold",
   };
 
   return (
@@ -1329,7 +1377,7 @@ function LiveTerminalPanel({ lines }: { lines: TerminalLine[] }) {
           </p>
         ) : (
           lines.map((line, i) => (
-            <div key={i} className="flex gap-3 mb-0.5">
+            <div key={i} className={`flex gap-3 mb-0.5 ${line.type === "rag" ? "bg-violet-500/10 rounded px-1.5 py-0.5 border-l-2 border-violet-500/50" : ""}`}>
               <span className="text-muted-foreground/40 shrink-0">
                 {line.ts}
               </span>
@@ -1398,12 +1446,14 @@ function OverviewTab({
   stage,
   terminalLines,
   tests,
+  ragInsights,
 }: {
   agentStatuses: Record<string, AgentStatus>;
   agentTasks: Record<string, string>;
   stage: PipelineStage;
   terminalLines: TerminalLine[];
   tests: TestResult[];
+  ragInsights: RagInsight[];
 }) {
   const passed = tests.filter((t) => t.status === "passed").length;
   const failed = tests.filter((t) => t.status === "failed").length;
@@ -1446,6 +1496,8 @@ function OverviewTab({
           color="#F59E0B"
         />
       </div>
+
+      <RagInsightBanner insights={ragInsights} />
 
       {/* Agent grid */}
       <div>
@@ -2009,6 +2061,7 @@ function PipelineTab({
   selectedPrNumber,
   prsLoading,
   prsError,
+  ragInsights,
   onConfigChange,
   onPrSearchChange,
   onRefreshPrs,
@@ -2030,6 +2083,7 @@ function PipelineTab({
   selectedPrNumber: number | null;
   prsLoading: boolean;
   prsError: string;
+  ragInsights: RagInsight[];
   onConfigChange: (field: string, value: string) => void;
   onPrSearchChange: (value: string) => void;
   onRefreshPrs: () => void;
@@ -2176,6 +2230,8 @@ function PipelineTab({
         </p>
       </div>
 
+      <RagInsightBanner insights={ragInsights} />
+
       <PipelineFlowViz stage={stage} agentStatuses={agentStatuses} terminalLines={terminalLines} />
     </div>
   );
@@ -2221,6 +2277,7 @@ export default function DashboardPage() {
   const [prsLoading, setPrsLoading] = useState(false);
   const [prsError, setPrsError] = useState("");
   const [pipelineError, setPipelineError] = useState("");
+  const [ragInsights, setRagInsights] = useState<RagInsight[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [sessionStatus, setSessionStatus] = useState<string | undefined>(undefined);
   const [courierType, setCourierType] = useState<"pr" | "issue" | undefined>(undefined);
@@ -2322,7 +2379,20 @@ export default function DashboardPage() {
           nextStatuses[agent] = "running";
           const message = (event.payload as any)?.message;
           if (typeof message === "string" && message.trim()) {
-            addLines([{ text: `[${agent.toUpperCase()}] ${message}`, type: "agent", ts: "" }], 0);
+            const isRagMessage = message.includes("RAG:");
+            addLines([{
+              text: `[${agent.toUpperCase()}] ${message}`,
+              type: isRagMessage ? "rag" : "agent",
+              ts: "",
+            }], 0);
+
+            if (isRagMessage) {
+              setRagInsights(prev => [...prev, {
+                agent: agent.toUpperCase(),
+                message,
+                timestamp: new Date().toLocaleTimeString(),
+              }]);
+            }
           }
         }
       }
@@ -2387,6 +2457,7 @@ export default function DashboardPage() {
     setActiveSessionId(sessionId);
     setSessionStatus("running");
     setCourierType(undefined);
+    setRagInsights([]);
     setStage("architect");
     setTerminalLines([]);
     setTests(INITIAL_TESTS.map((t) => ({ ...t, status: "pending", duration: "—" })));
@@ -2623,6 +2694,7 @@ export default function DashboardPage() {
                   stage={stage}
                   terminalLines={terminalLines}
                   tests={tests}
+                  ragInsights={ragInsights}
                 />
               )}
               {activeTab === "pipeline" && (
@@ -2641,6 +2713,7 @@ export default function DashboardPage() {
                   selectedPrNumber={selectedPrNumber}
                   prsLoading={prsLoading}
                   prsError={prsError}
+                  ragInsights={ragInsights}
                   onConfigChange={handleConfigChange}
                   onPrSearchChange={setPrSearch}
                   onRefreshPrs={() => {

@@ -341,6 +341,19 @@ def architect_node(state: SentinelState) -> dict[str, object]:
     except Exception:
         pass
 
+    rag_architect_matches = len(past_plans)
+    rag_architect_insights = ""
+    if past_plans:
+        rag_architect_insights = (
+            f"Found {rag_architect_matches} similar past test plan(s) from RAG. "
+            f"Using these as reference for test structure and coverage."
+        )
+
+    rag_meta = {
+        "rag_architect_matches": rag_architect_matches,
+        "rag_architect_insights": rag_architect_insights,
+    }
+
     # Phase 3: Build structured prompt and generate test plan
     user_prompt = _build_user_prompt(state, file_changes, syntax_issues, past_plans)
 
@@ -356,11 +369,11 @@ def architect_node(state: SentinelState) -> dict[str, object]:
             if isinstance(response.content, str)
             else str(response.content)
         )
-        return {"test_plan": content}
+        return {"test_plan": content, **rag_meta}
     except Exception as err:
         if is_real_only_mode():
             raise RuntimeError(
                 f"Architect live LLM call failed for provider '{provider}': "
                 f"{err.__class__.__name__}"
             ) from err
-        return {"test_plan": _mock_test_plan(state)}
+        return {"test_plan": _mock_test_plan(state), **rag_meta}

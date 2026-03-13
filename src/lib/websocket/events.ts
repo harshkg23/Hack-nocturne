@@ -51,6 +51,7 @@ export interface CourierEvent {
   type: "pr" | "issue";
   url?: string;
   number?: number;
+  includes_fix?: boolean;
   timestamp: string;
 }
 

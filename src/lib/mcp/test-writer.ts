@@ -209,6 +209,8 @@ export interface PRBodyOptions {
   targetBranch?: string;
   /** Files changed in the original PR (from diff) */
   originalChangedFiles?: string[];
+  /** Issue number created by the Courier for this failure (links PR to issue) */
+  issueNumber?: number;
 }
 
 export function buildPRBody(
@@ -236,6 +238,11 @@ export function buildPRBody(
   lines.push(`**Generated**: ${new Date().toISOString()}`);
   if (prOptions?.originalPrNumber) {
     lines.push(`**Testing PR**: #${prOptions.originalPrNumber}${prOptions.originalPrTitle ? ` — ${prOptions.originalPrTitle}` : ""}`);
+  }
+  if (prOptions?.issueNumber) {
+    lines.push(`**Fixes**: #${prOptions.issueNumber}`);
+    lines.push(``);
+    lines.push(`Closes #${prOptions.issueNumber}`);
   }
   lines.push(``);
 

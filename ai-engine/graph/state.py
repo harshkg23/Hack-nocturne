@@ -33,6 +33,12 @@ class SentinelState(TypedDict, total=False):
     dispatch_result_url: str
     dispatch_result_number: int
 
+    # RAG insight metadata (set by architect/healer, returned to orchestrator)
+    rag_healer_matches: int
+    rag_healer_insights: str
+    rag_architect_matches: int
+    rag_architect_insights: str
+
     # Local test controls
     simulate_all_pass: bool
     force_mock: bool

@@ -44,6 +44,8 @@ class GenerateTestPlanRequest(BaseModel):
 class GenerateTestPlanResponse(BaseModel):
     test_plan: str
     provider: str  # "mock" | "openai" | "anthropic"
+    rag_architect_matches: int = 0
+    rag_architect_insights: str = ""
 
 
 class AnalyzeFailureRequest(BaseModel):
@@ -119,6 +121,8 @@ class RunHealerResponse(BaseModel):
     confidence_score: float | None = None
     fix_branch: str | None = None
     target_files: list[str] | None = None
+    rag_healer_matches: int = 0
+    rag_healer_insights: str = ""
 
 
 # ── Endpoints ───────────────────────────────────────────────────────────────
@@ -183,6 +187,8 @@ async def generate_test_plan(request: GenerateTestPlanRequest):
         return GenerateTestPlanResponse(
             test_plan=test_plan,
             provider=provider_used,
+            rag_architect_matches=int(result.get("rag_architect_matches", 0)),
+            rag_architect_insights=str(result.get("rag_architect_insights", "")),
         )
 
     except Exception as e:
@@ -289,6 +295,8 @@ async def run_healer(request: RunHealerRequest):
             confidence_score=result.get("confidence_score"),
             fix_branch=result.get("fix_branch"),
             target_files=result.get("target_files"),
+            rag_healer_matches=int(result.get("rag_healer_matches", 0)),
+            rag_healer_insights=str(result.get("rag_healer_insights", "")),
         )
 
     except Exception as e:
