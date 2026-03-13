@@ -1,4 +1,4 @@
-\"use client\";
+"use client";
 
 import { useState } from "react";
 import { CheckCircle2, ArrowRight, Bot, GitBranch, Activity } from "lucide-react";
