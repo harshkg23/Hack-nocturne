@@ -30,6 +30,8 @@ export async function GET(
         created_at: session.created_at,
         completed_at: session.completed_at,
         error: session.error,
+        agents: session.agents ?? {},
+        courier_result: session.courier_result,
         input: {
             target_url: session.input.target_url,
             session_id: session.input.session_id,

@@ -21,6 +21,7 @@ import "server-only";
 
 export interface SlackNotifyOptions {
   webhookUrl?: string;
+  channel?: string;
 }
 
 // ── Block Kit helpers ──────────────────────────────────────────────────────
@@ -80,7 +81,14 @@ async function send(blocks: Block[], fallbackText: string, opts?: SlackNotifyOpt
     return;
   }
 
-  const payload = { text: fallbackText, blocks };
+  const normalizedChannel = opts?.channel?.trim();
+  const payload: Record<string, unknown> = { text: fallbackText, blocks };
+
+  if (normalizedChannel) {
+    payload.channel = normalizedChannel.startsWith("#")
+      ? normalizedChannel
+      : `#${normalizedChannel}`;
+  }
 
   try {
     const res = await fetch(webhookUrl, {
