@@ -9,6 +9,10 @@
 // ============================================================================
 
 import { NextRequest, NextResponse } from "next/server";
+
+export const dynamic = "force-dynamic";
+export const maxDuration = 300; // 5 min — pipeline spawns MCP servers + runs browser tests
+
 import { AgentOrchestrator } from "@/lib/mcp/orchestrator";
 import {
     notifyPipelineStarted,
