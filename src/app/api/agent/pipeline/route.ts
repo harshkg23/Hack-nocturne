@@ -51,7 +51,7 @@ export async function POST(request: NextRequest) {
             branch: bodyBranch,
             target_url: bodyTargetUrl,
             github_token,
-            github_mcp_mode = "docker",
+            github_mcp_mode = "npx",
             selected_pr,
             slack_channel,
             session_id,
