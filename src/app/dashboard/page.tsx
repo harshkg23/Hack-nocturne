@@ -47,6 +47,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
+import { useSessionWebSocket } from "@/hooks/use-websocket";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -95,6 +96,77 @@ interface OpenPullRequest {
   createdAt?: string;
   updatedAt?: string;
 }
+
+const mapEventAgentToFlowAgent = (agentName?: string): keyof Record<string, AgentStatus> | null => {
+  if (!agentName) return null;
+  const normalized = agentName.toLowerCase();
+  if (normalized === "playwright") return "scripter";
+  if (normalized === "test-writer") return "courier";
+  if (["architect", "scripter", "watchdog", "healer", "courier"].includes(normalized)) {
+    return normalized as keyof Record<string, AgentStatus>;
+  }
+  return null;
+};
+
+const buildAgentTasks = (statuses: Record<string, AgentStatus>): Record<string, string> => ({
+  architect:
+    statuses.architect === "running"
+      ? "Reading repository via GitHub MCP..."
+      : statuses.architect === "success"
+      ? "Repository analysis completed"
+      : "Awaiting trigger…",
+  scripter:
+    statuses.scripter === "running"
+      ? "Generating and executing tests..."
+      : statuses.scripter === "success"
+      ? "Test execution finished"
+      : "Awaiting test plan…",
+  watchdog:
+    statuses.watchdog === "running"
+      ? "Analyzing failed test telemetry..."
+      : statuses.watchdog === "success"
+      ? "Anomalies analyzed"
+      : "Monitoring metrics…",
+  healer:
+    statuses.healer === "running"
+      ? "Preparing remediation context..."
+      : statuses.healer === "success"
+      ? "RCA prepared"
+      : "On standby…",
+  courier:
+    statuses.courier === "running"
+      ? "Dispatching GitHub/Slack notifications..."
+      : statuses.courier === "success"
+      ? "Notifications completed"
+      : "Ready to notify…",
+});
+
+const derivePipelineStage = (
+  statuses: Record<string, AgentStatus>,
+  sessionStatus?: string,
+  courierType?: "pr" | "issue",
+): PipelineStage => {
+  if (statuses.architect === "running") return "architect";
+  if (statuses.scripter === "running") return "scripter";
+  if (statuses.watchdog === "running") return "watchdog";
+  if (statuses.healer === "running") return "healer";
+
+  if (statuses.courier === "running" || statuses.courier === "success") {
+    if (courierType === "issue") return "courier_issue";
+    if (courierType === "pr") return "courier_pr";
+    if (statuses.watchdog === "idle" && statuses.healer === "idle") return "complete";
+    return "courier_pr";
+  }
+
+  if (sessionStatus === "completed") return "complete";
+  if (sessionStatus === "failed") return courierType === "issue" ? "courier_issue" : "courier_pr";
+
+  if (statuses.healer === "success") return "healer";
+  if (statuses.watchdog === "success") return "watchdog";
+  if (statuses.scripter === "success") return "scripter";
+  if (statuses.architect === "success") return "architect";
+  return "idle";
+};
 
 // ─── Agent Configs ────────────────────────────────────────────────────────────
 
@@ -906,182 +978,330 @@ function AgentMiniCard({
 function PipelineFlowViz({
   stage,
   agentStatuses,
+  terminalLines,
 }: {
   stage: PipelineStage;
   agentStatuses: Record<string, AgentStatus>;
+  terminalLines: TerminalLine[];
 }) {
-  const nodeClass = (id: string, activeStage: string) => {
-    const agent = AGENTS.find((a) => a.id === id);
-    if (!agent) return "";
-    const s = agentStatuses[id] ?? "idle";
-    const isActive = activeStage === id || stage === activeStage;
-    return `${agent.bg} border ${s === "running" ? agent.border : s === "success" ? "border-emerald-500/40" : s === "error" ? "border-red-500/40" : "border-border/40"} ${agent.text}`;
-  };
 
-  const FlowNode = ({
-    id,
-    label,
-    role,
-    sublabel,
-  }: {
-    id: string;
-    label: string;
-    role: string;
-    sublabel?: string;
-  }) => {
+  const AgentNode = ({ id, label, role }: { id: string; label: string; role: string }) => {
     const agent = AGENTS.find((a) => a.id === id);
     const s = agentStatuses[id] ?? "idle";
+    const agentBg = agent?.bg ?? "bg-muted/20";
+    const agentBorder = agent?.border ?? "border-border/40";
+    const agentText = agent?.text ?? "text-muted-foreground";
+    const agentColor = agent?.color;
+    let cls = `${agentBg} border ${agentBorder} ${agentText}`;
+    if (s === "running") cls = `${agentBg} border-2 ${agentBorder} ${agentText}`;
+    if (s === "success") cls = "bg-emerald-500/10 border-2 border-emerald-500/50 text-emerald-400";
+    if (s === "error")   cls = "bg-red-500/10 border-2 border-red-500/50 text-red-400";
     return (
       <motion.div
-        animate={s === "running" ? { scale: [1, 1.02, 1] } : {}}
+        animate={s === "running" ? { scale: [1, 1.03, 1] } : {}}
         transition={{ duration: 1.5, repeat: Infinity }}
-        className={`relative rounded-xl p-3 border text-center min-w-[130px] ${nodeClass(id, id)}`}
+        style={s === "running" ? { boxShadow: `0 0 18px ${agentColor}40` } : {}}
+        className={`relative rounded-2xl p-4 text-center w-full max-w-[180px] transition-all ${cls}`}
       >
-        <div
-          className={`w-8 h-8 rounded-lg mx-auto mb-2 flex items-center justify-center ${agent?.bg}`}
-        >
-          {agent?.icon}
+        <div className={`w-10 h-10 rounded-xl mx-auto mb-2 flex items-center justify-center ${agentBg} border ${agentBorder}`}>
+          <span className="scale-110">{agent?.icon}</span>
         </div>
-        <p className="text-[11px] font-bold tracking-wide">{label}</p>
-        <p className="text-[9px] opacity-60 mt-0.5">{role}</p>
-        {sublabel && <p className="text-[9px] opacity-50 mt-0.5">{sublabel}</p>}
-        <div className="mt-1.5">
+        <p className="text-xs font-bold tracking-wider uppercase">{label}</p>
+        <p className="text-[10px] opacity-50 mt-0.5 leading-tight">{role}</p>
+        <div className="mt-2 flex justify-center">
           <StatusBadge status={s} />
         </div>
         {s === "running" && (
-          <div
-            className="absolute -inset-px rounded-xl border animate-pulse"
-            style={{ borderColor: `${agent?.color}40` }}
-          />
+          <div className="absolute -inset-px rounded-2xl border-2 animate-pulse pointer-events-none"
+            style={{ borderColor: `${agentColor}60` }} />
         )}
       </motion.div>
     );
   };
 
-  const Arrow = ({ vertical }: { vertical?: boolean }) => (
-    <div
-      className={`flex items-center justify-center ${vertical ? "flex-col" : ""}`}
-    >
-      {vertical ? (
-        <div className="w-px h-6 bg-gradient-to-b from-border/50 to-border/50 relative">
-          <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-t-4 border-l-transparent border-r-transparent border-t-border/60" />
-        </div>
-      ) : (
-        <div className="h-px w-8 bg-gradient-to-r from-border/50 to-border/50 relative flex items-center justify-end">
-          <div className="absolute -right-1 w-0 h-0 border-t-4 border-b-4 border-l-4 border-t-transparent border-b-transparent border-l-border/60" />
-        </div>
+  const VConn = ({
+    label,
+    active = false,
+    tone = "primary",
+  }: {
+    label?: string;
+    active?: boolean;
+    tone?: "primary" | "success" | "danger";
+  }) => (
+    <div className="flex flex-col items-center">
+      <div className={`w-px h-5 bg-gradient-to-b ${
+        active
+          ? tone === "success"
+            ? "from-emerald-400/30 to-emerald-400/90"
+            : tone === "danger"
+            ? "from-red-400/30 to-red-400/90"
+            : "from-cyan-400/30 to-cyan-400/90"
+          : "from-border/30 to-border/60"
+      }`} />
+      {label && (
+        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full my-0.5 border ${
+          active
+            ? label === "YES"
+              ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/30"
+              : "text-red-400 bg-red-500/10 border-red-500/30"
+            : "text-muted-foreground/70 bg-muted/20 border-border/40"
+        }`}>{label}</span>
       )}
+      <div className={`w-px h-4 relative ${
+        active
+          ? tone === "success"
+            ? "bg-emerald-400/90"
+            : tone === "danger"
+            ? "bg-red-400/90"
+            : "bg-cyan-400/90"
+          : "bg-border/60"
+      }`}>
+        <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-0 h-0
+          border-l-[5px] border-r-[5px] border-t-[6px]
+          border-l-transparent border-r-transparent"
+          style={{
+            borderTopColor: active
+              ? tone === "success"
+                ? "rgb(52 211 153 / 0.9)"
+                : tone === "danger"
+                ? "rgb(248 113 113 / 0.9)"
+                : "rgb(34 211 238 / 0.9)"
+              : "rgb(148 163 184 / 0.6)",
+          }}
+        />
+      </div>
     </div>
   );
 
-  const Decision = ({ label }: { label: string }) => (
-    <div className="relative w-24 h-12 flex items-center justify-center">
-      <div className="absolute inset-0 rotate-45 rounded-md border border-border/50 bg-muted/20" />
-      <p className="relative z-10 text-[10px] font-bold text-foreground/60 text-center leading-tight px-1">
-        {label}
-      </p>
+  const Diamond = ({ label, active = false }: { label: string; active?: boolean }) => (
+    <div className="relative flex items-center justify-center my-2" style={{ width: 120, height: 64 }}>
+      <div className="absolute inset-0 flex items-center justify-center">
+        <div className={`w-[80px] h-[80px] rotate-45 rounded-xl border-2 transition-all ${
+          active
+            ? "border-primary/80 bg-primary/20 shadow-[0_0_20px_rgba(99,102,241,0.4)]"
+            : "border-primary/25 bg-primary/5"
+        }`} />
+      </div>
+      <p className={`relative z-10 text-[11px] font-bold text-center leading-snug px-3 whitespace-pre-line ${
+        active ? "text-primary" : "text-primary/60"
+      }`}>{label}</p>
     </div>
   );
+
+  const TriggerNode = () => (
+    <div className={`rounded-2xl p-4 text-center border transition-all ${
+      stage !== "idle"
+        ? "border-primary/60 bg-primary/10 text-primary shadow-[0_0_20px_rgba(99,102,241,0.25)]"
+        : "border-border/40 bg-muted/20 text-muted-foreground"
+    }`}>
+      <GitCommit className="w-7 h-7 mx-auto mb-2" />
+      <p className="text-xs font-bold uppercase tracking-wider">Code Push</p>
+      <p className="text-[10px] opacity-50 mt-0.5">Trigger</p>
+    </div>
+  );
+
+
+  /* Courier outcome node */
+  const OutcomeNode = ({
+    icon, label, sublabel, active, activeClass,
+  }: {
+    icon: React.ReactNode;
+    label: string;
+    sublabel: string;
+    active: boolean;
+    activeClass: string;
+  }) => (
+    <div className={`rounded-2xl p-3 text-center border w-full max-w-[160px] transition-all ${
+      active ? activeClass : "border-border/40 bg-muted/20 text-muted-foreground"
+    }`}>
+      <div className="w-8 h-8 mx-auto mb-1.5 flex items-center justify-center">{icon}</div>
+      <p className="text-xs font-bold uppercase tracking-wide">{label}</p>
+      <p className="text-[10px] opacity-60 mt-0.5 leading-tight">{sublabel}</p>
+    </div>
+  );
+
+  /* Log colors */
+  const logColor: Record<string, string> = {
+    system:  "text-primary font-semibold",
+    info:    "text-foreground/70",
+    success: "text-emerald-400",
+    error:   "text-red-400",
+    warn:    "text-amber-400",
+    agent:   "text-cyan-400",
+  };
+
+  const playwrightPassed = terminalLines.filter(
+    (l) => l.text.includes("✓") && (l.text.includes("test(") || l.text.includes("SCRIPTER"))
+  ).length;
+
+  const logRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+  }, [terminalLines]);
+
+  const stageRank: Record<PipelineStage, number> = {
+    idle: 0,
+    architect: 1,
+    scripter: 2,
+    watchdog: 3,
+    healer: 4,
+    courier_pr: 5,
+    courier_issue: 5,
+    complete: 6,
+  };
+  const atLeast = (target: PipelineStage) => stageRank[stage] >= stageRank[target];
+
+  const courierPrActive = stage === "courier_pr" || stage === "complete";
+  const courierIssueActive = stage === "courier_issue";
+  const courierSlackActive = agentStatuses.courier === "success" && stage === "complete";
+
+  const triggerToArchitectActive = atLeast("architect");
+  const architectToScripterActive = atLeast("scripter");
+  const scripterToDecisionActive = atLeast("scripter");
+  const failBranchActive = atLeast("watchdog") || courierIssueActive || courierPrActive;
+  const watchdogToHealerActive = atLeast("healer");
+  const healerToConfidenceActive = atLeast("healer");
 
   return (
-    <div className="glass rounded-2xl neon-border p-6 overflow-x-auto">
-      <h3 className="text-sm font-bold text-foreground mb-6 flex items-center gap-2">
-        <Activity className="w-4 h-4 text-primary" />
-        Live Pipeline — Multi-Agent Data Flow
-      </h3>
-
-      {/* Row 1: Trigger → Architect → Scripter → Decision */}
-      <div className="flex items-center gap-2 mb-4">
-        {/* Trigger */}
-        <div
-          className={`rounded-xl p-3 border text-center min-w-[100px] ${stage !== "idle" ? "border-primary/40 bg-primary/10 text-primary" : "border-border/40 bg-muted/20 text-muted-foreground"}`}
-        >
-          <GitCommit className="w-6 h-6 mx-auto mb-1.5" />
-          <p className="text-[11px] font-bold">CODE PUSH</p>
-          <p className="text-[9px] opacity-60">Trigger</p>
-        </div>
-        <Arrow />
-        <FlowNode
-          id="architect"
-          label="THE ARCHITECT"
-          role="Planner"
-          sublabel="Aaskar"
-        />
-        <Arrow />
-        <FlowNode
-          id="scripter"
-          label="THE SCRIPTER"
-          role="Playwright MCP"
-          sublabel="Harsh & Himanshu"
-        />
-        <Arrow />
-        <Decision label="Tests Pass?" />
-
-        {/* YES branch */}
-        <div className="flex flex-col items-center gap-1">
-          <span className="text-[10px] text-emerald-400 font-bold">YES</span>
-          <Arrow />
-          <div
-            className={`rounded-xl p-3 border text-center min-w-[110px] ${agentStatuses.courier === "success" && stage === "complete" ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400" : "border-border/40 bg-muted/20 text-muted-foreground"}`}
-          >
-            <Send className="w-5 h-5 mx-auto mb-1.5" />
-            <p className="text-[11px] font-bold">COURIER</p>
-            <p className="text-[9px] opacity-60">All Clear → Slack</p>
+    <div className="glass rounded-2xl neon-border overflow-hidden">
+      {/* ── Header ── */}
+      <div className="flex items-center justify-between px-6 py-4 border-b border-border/40 bg-card/30">
+        <div className="flex items-center gap-2.5">
+          <div className="w-7 h-7 rounded-lg bg-primary/15 border border-primary/30 flex items-center justify-center">
+            <Activity className="w-3.5 h-3.5 text-primary" />
           </div>
+          <div>
+            <p className="text-sm font-bold text-foreground">Live Pipeline</p>
+            <p className="text-[10px] text-muted-foreground">Multi-Agent Data Flow</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
+          {stage !== "idle" && (
+            <span className="relative flex items-center gap-1.5 text-xs font-medium text-secondary">
+              <span className="w-2 h-2 rounded-full bg-secondary animate-ping absolute" />
+              <span className="w-2 h-2 rounded-full bg-secondary relative" />
+              <span className="ml-1">Live</span>
+            </span>
+          )}
+          <span className={`text-xs px-3 py-1 rounded-full border font-semibold tracking-wide ${
+            stage === "idle"
+              ? "text-muted-foreground border-border/50 bg-muted/20"
+              : stage === "complete"
+              ? "text-emerald-400 border-emerald-500/40 bg-emerald-500/10"
+              : "text-cyan-400 border-cyan-500/40 bg-cyan-500/10 animate-pulse"
+          }`}>
+            {stage === "idle" ? "Idle" : stage === "complete" ? "✓ Complete" : `▶ ${stage.toUpperCase()}`}
+          </span>
         </div>
       </div>
 
-      {/* NO branch — flows down from Decision */}
-      <div className="ml-[460px] flex flex-col items-start gap-0">
-        <div className="flex items-center gap-1 mb-1">
-          <span className="text-[10px] text-red-400 font-bold ml-2">NO</span>
+      {/* ── Body: exactly 50/50 ── */}
+      <div className="grid grid-cols-[1.1fr_0.9fr] divide-x divide-border/30 min-h-[560px]">
+
+        {/* ══ LEFT: Flow Diagram ══ */}
+        <div className="p-6 flex flex-col items-center overflow-y-auto gap-0 h-full">
+          <TriggerNode />
+          <VConn active={triggerToArchitectActive} />
+          <AgentNode id="architect" label="Architect" role="Plans tests via GitHub MCP" />
+          <VConn active={architectToScripterActive} />
+          <AgentNode id="scripter" label="Scripter" role="Playwright MCP executor" />
+          <VConn active={scripterToDecisionActive} />
+          <Diamond label={"Tests\nPass?"} active={stage !== "idle"} />
+
+          {/* YES / NO fork */}
+          <div className="w-full flex justify-around items-start gap-4 mt-1">
+            {/* ── YES PATH ── */}
+            <div className="flex flex-col items-center">
+              <VConn label="YES" active={courierSlackActive} tone="success" />
+              <OutcomeNode
+                icon={<Send className="w-5 h-5" />}
+                label="Courier"
+                sublabel="All Clear → Slack"
+                active={courierSlackActive}
+                activeClass="border-emerald-500/60 bg-emerald-500/10 text-emerald-400 shadow-[0_0_16px_rgba(16,185,129,0.25)]"
+              />
+            </div>
+
+            {/* ── NO PATH ── */}
+            <div className="flex flex-col items-center">
+              <VConn label="NO" active={failBranchActive} tone="danger" />
+              <AgentNode id="watchdog" label="Watchdog" role="SRE metrics + logs" />
+              <VConn active={watchdogToHealerActive} tone="danger" />
+              <AgentNode id="healer" label="Healer" role="RCA + code patch" />
+              <VConn active={healerToConfidenceActive} tone="danger" />
+              <Diamond label={"Confidence\n>80%?"} active={["healer","courier_pr","courier_issue","complete"].includes(stage)} />
+              <div className="w-full flex justify-around gap-2 mt-1">
+                <div className="flex flex-col items-center">
+                  <VConn label="YES" active={courierPrActive} tone="success" />
+                  <OutcomeNode
+                    icon={<Github className="w-4 h-4" />}
+                    label="Courier"
+                    sublabel="GitHub PR"
+                    active={courierPrActive}
+                    activeClass="border-blue-500/60 bg-blue-500/10 text-blue-400 shadow-[0_0_16px_rgba(59,130,246,0.25)]"
+                  />
+                </div>
+                <div className="flex flex-col items-center">
+                  <VConn label="NO" active={courierIssueActive} tone="danger" />
+                  <OutcomeNode
+                    icon={<AlertTriangle className="w-4 h-4" />}
+                    label="Courier"
+                    sublabel="GitHub Issue"
+                    active={courierIssueActive}
+                    activeClass="border-red-500/60 bg-red-500/10 text-red-400 shadow-[0_0_16px_rgba(239,68,68,0.25)]"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
-        <div className="flex items-start gap-2">
-          <Arrow vertical />
-          <div className="flex flex-col gap-2 -mt-3">
-            <FlowNode
-              id="watchdog"
-              label="THE WATCHDOG"
-              role="SRE Monitor"
-              sublabel="Arpit"
-            />
-            <div className="flex justify-center">
-              <Arrow vertical />
+
+        {/* ══ RIGHT: Live Logs ══ */}
+        <div className="flex flex-col h-full">
+          {/* Toolbar */}
+          <div className="flex items-center gap-2 px-4 py-3 border-b border-border/40 bg-black/30 shrink-0">
+            <div className="flex gap-1.5">
+              <span className="w-3 h-3 rounded-full bg-red-500/70" />
+              <span className="w-3 h-3 rounded-full bg-amber-500/70" />
+              <span className="w-3 h-3 rounded-full bg-emerald-500/70" />
             </div>
-            <FlowNode
-              id="healer"
-              label="THE HEALER"
-              role="Debugger"
-              sublabel="Aaskar"
-            />
-            <div className="flex justify-center">
-              <Arrow vertical />
-            </div>
-            <Decision label="Confidence >80%?" />
-            <div className="flex gap-6 mt-1">
-              <div className="flex flex-col items-center gap-1">
-                <span className="text-[10px] text-emerald-400 font-bold">
-                  YES
+            <span className="text-xs font-mono text-muted-foreground ml-1">execution-logs</span>
+            <div className="ml-auto flex items-center gap-2">
+              {playwrightPassed > 0 && (
+                <span className="text-[10px] px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 font-mono">
+                  playwright · {playwrightPassed} ✓
                 </span>
-                <Arrow vertical />
-                <div
-                  className={`rounded-xl p-3 border text-center min-w-[110px] ${stage === "courier_pr" || stage === "complete" ? "border-blue-500/40 bg-blue-500/10 text-blue-400" : "border-border/40 bg-muted/20 text-muted-foreground"}`}
-                >
-                  <Github className="w-5 h-5 mx-auto mb-1.5" />
-                  <p className="text-[11px] font-bold">COURIER</p>
-                  <p className="text-[9px] opacity-60">Create GitHub PR</p>
-                </div>
-              </div>
-              <div className="flex flex-col items-center gap-1">
-                <span className="text-[10px] text-red-400 font-bold">NO</span>
-                <Arrow vertical />
-                <div className="rounded-xl p-3 border border-border/40 bg-muted/20 text-muted-foreground text-center min-w-[110px]">
-                  <AlertTriangle className="w-5 h-5 mx-auto mb-1.5" />
-                  <p className="text-[11px] font-bold">COURIER</p>
-                  <p className="text-[9px] opacity-60">Create GitHub Issue</p>
-                </div>
-              </div>
+              )}
+              {stage !== "idle" && (
+                <span className="flex items-center gap-1.5 text-[10px] text-secondary">
+                  <span className="w-1.5 h-1.5 rounded-full bg-secondary animate-pulse" />
+                  streaming
+                </span>
+              )}
             </div>
+          </div>
+
+          {/* Log stream */}
+          <div
+            ref={logRef}
+            className="flex-1 h-full overflow-y-auto p-3 font-mono text-[10px] leading-relaxed bg-black/40 space-y-0.5"
+          >
+            {terminalLines.length === 0 ? (
+              <p className="text-muted-foreground/30 pt-4 text-center text-xs">Run pipeline to see live logs…</p>
+            ) : (
+              terminalLines.map((line, i) => (
+                <motion.div
+                  key={i}
+                  initial={{ opacity: 0, x: 6 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ duration: 0.2 }}
+                  className="flex gap-2"
+                >
+                  <span className="text-muted-foreground/30 shrink-0 tabular-nums">{line.ts}</span>
+                  <span className={logColor[line.type] ?? "text-foreground/60"}>{line.text}</span>
+                </motion.div>
+              ))
+            )}
           </div>
         </div>
       </div>
@@ -1800,6 +2020,7 @@ function PrsTab({
 
 function PipelineTab({
   stage,
+  terminalLines,
   agentStatuses,
   owner,
   repo,
@@ -1820,6 +2041,7 @@ function PipelineTab({
   running,
 }: {
   stage: PipelineStage;
+  terminalLines: TerminalLine[];
   agentStatuses: Record<string, AgentStatus>;
   owner: string;
   repo: string;
@@ -1978,7 +2200,7 @@ function PipelineTab({
         </p>
       </div>
 
-      <PipelineFlowViz stage={stage} agentStatuses={agentStatuses} />
+      <PipelineFlowViz stage={stage} agentStatuses={agentStatuses} terminalLines={terminalLines} />
     </div>
   );
 }
@@ -2023,6 +2245,15 @@ export default function DashboardPage() {
   const [prsLoading, setPrsLoading] = useState(false);
   const [prsError, setPrsError] = useState("");
   const [pipelineError, setPipelineError] = useState("");
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [sessionStatus, setSessionStatus] = useState<string | undefined>(undefined);
+  const [courierType, setCourierType] = useState<"pr" | "issue" | undefined>(undefined);
+
+  const { events: sessionEvents, clearEvents } = useSessionWebSocket(activeSessionId);
+  const processedEventCountRef = useRef(0);
+  const agentStatusesRef = useRef(agentStatuses);
+  const sessionStatusRef = useRef<string | undefined>(sessionStatus);
+  const courierTypeRef = useRef<"pr" | "issue" | undefined>(courierType);
 
   const addLines = useCallback((lines: TerminalLine[], offset = 0) => {
     lines.forEach((line, i) => {
@@ -2081,6 +2312,88 @@ export default function DashboardPage() {
     void fetchPullRequests();
   }, [fetchPullRequests, owner, repo]);
 
+  useEffect(() => {
+    agentStatusesRef.current = agentStatuses;
+  }, [agentStatuses]);
+
+  useEffect(() => {
+    sessionStatusRef.current = sessionStatus;
+  }, [sessionStatus]);
+
+  useEffect(() => {
+    courierTypeRef.current = courierType;
+  }, [courierType]);
+
+  useEffect(() => {
+    processedEventCountRef.current = 0;
+  }, [activeSessionId]);
+
+  useEffect(() => {
+    if (!activeSessionId || sessionEvents.length === 0) return;
+
+    const newEvents = sessionEvents.slice(processedEventCountRef.current);
+    if (newEvents.length === 0) return;
+    processedEventCountRef.current = sessionEvents.length;
+
+    const nextStatuses = { ...agentStatusesRef.current };
+    let nextSessionStatus = sessionStatusRef.current;
+    let nextCourierType = courierTypeRef.current;
+
+    for (const event of newEvents) {
+      if (event.name === "agent.started") {
+        const agent = mapEventAgentToFlowAgent((event.payload as any)?.agent_name);
+        if (agent) {
+          nextStatuses[agent] = "running";
+          const message = (event.payload as any)?.message;
+          if (typeof message === "string" && message.trim()) {
+            addLines([{ text: `[${agent.toUpperCase()}] ${message}`, type: "agent", ts: "" }], 0);
+          }
+        }
+      }
+
+      if (event.name === "agent.completed") {
+        const agent = mapEventAgentToFlowAgent((event.payload as any)?.agent_name);
+        if (agent) {
+          nextStatuses[agent] = "success";
+        }
+      }
+
+      if (event.name === "session.status_changed") {
+        const status = (event.payload as any)?.status;
+        if (typeof status === "string") {
+          nextSessionStatus = status;
+        }
+      }
+
+      if (event.name === "courier.pr_created") {
+        nextCourierType = "pr";
+        nextStatuses.courier = "success";
+      }
+
+      if (event.name === "courier.issue_created") {
+        nextCourierType = "issue";
+        nextStatuses.courier = "success";
+      }
+
+      if (event.name === "pipeline.completed") {
+        const status = (event.payload as any)?.status;
+        if (typeof status === "string") {
+          nextSessionStatus = status;
+        }
+      }
+    }
+
+    agentStatusesRef.current = nextStatuses;
+    sessionStatusRef.current = nextSessionStatus;
+    courierTypeRef.current = nextCourierType;
+
+    setAgentStatuses(nextStatuses);
+    setSessionStatus(nextSessionStatus);
+    setCourierType(nextCourierType);
+    setAgentTasks(buildAgentTasks(nextStatuses));
+    setStage(derivePipelineStage(nextStatuses, nextSessionStatus, nextCourierType));
+  }, [activeSessionId, sessionEvents, addLines]);
+
   const runPipeline = useCallback(async () => {
     if (running || !selectedPrNumber) return;
 
@@ -2092,6 +2405,12 @@ export default function DashboardPage() {
 
     setPipelineError("");
     setRunning(true);
+    const sessionId = `pipeline_${Date.now()}`;
+    clearEvents();
+    processedEventCountRef.current = 0;
+    setActiveSessionId(sessionId);
+    setSessionStatus("running");
+    setCourierType(undefined);
     setStage("architect");
     setTerminalLines([]);
     setTests(INITIAL_TESTS.map((t) => ({ ...t, status: "pending", duration: "—" })));
@@ -2135,6 +2454,7 @@ export default function DashboardPage() {
             url: selectedPr.url,
           },
           slack_channel: slackChannel,
+          session_id: sessionId,
         }),
       });
 
@@ -2158,7 +2478,13 @@ export default function DashboardPage() {
         setTests(mappedTests);
       }
 
-      setStage("complete");
+      const finalStage: PipelineStage =
+        results?.failed > 0
+          ? data?.courier?.type === "issue"
+            ? "courier_issue"
+            : "courier_pr"
+          : "complete";
+      setStage(finalStage);
       setAgentStatuses({
         architect: "success",
         scripter: results?.failed > 0 ? "error" : "success",
@@ -2212,6 +2538,7 @@ export default function DashboardPage() {
       addLines([{ text: `Pipeline error: ${message}`, type: "error", ts: "" }], 0);
     } finally {
       setRunning(false);
+      setActiveSessionId(null);
     }
   }, [
     running,
@@ -2224,6 +2551,7 @@ export default function DashboardPage() {
     githubMcpMode,
     slackChannel,
     addLines,
+    clearEvents,
   ]);
 
   const TAB_TITLES: Record<Tab, string> = {
@@ -2342,6 +2670,7 @@ export default function DashboardPage() {
               {activeTab === "pipeline" && (
                 <PipelineTab
                   stage={stage}
+                  terminalLines={terminalLines}
                   agentStatuses={agentStatuses}
                   owner={owner}
                   repo={repo}
