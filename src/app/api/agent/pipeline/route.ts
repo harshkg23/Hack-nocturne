@@ -22,25 +22,24 @@ import {
 } from "@/lib/notifications/slack";
 
 export async function POST(request: NextRequest) {
-    let owner = "";
-    let repo = "";
-    let branch = "main";
-    let target_url = "";
+    let owner = process.env.SENTINELQA_DEFAULT_OWNER ?? "";
+    let repo = process.env.SENTINELQA_DEFAULT_REPO ?? "";
+    let branch = process.env.SENTINELQA_DEFAULT_BRANCH ?? "main";
+    let target_url = process.env.SENTINELQA_TARGET_URL ?? "";
 
     try {
-        const body = await request.json();
-        ({
-            owner,
-            repo,
-            branch = "main",
-            target_url,
-        } = body as { owner: string; repo: string; branch?: string; target_url: string });
+        const body = await request.json().catch(() => ({}));
+        const overrides = body as { owner?: string; repo?: string; branch?: string; target_url?: string };
+        if (overrides.owner) owner = overrides.owner;
+        if (overrides.repo) repo = overrides.repo;
+        if (overrides.branch) branch = overrides.branch;
+        if (overrides.target_url) target_url = overrides.target_url;
 
-        const { github_token, github_mcp_mode = "docker" } = body;
+        const { github_token, github_mcp_mode = "npx" } = body;
 
         if (!owner || !repo || !target_url) {
             return NextResponse.json(
-                { error: "Missing required fields: owner, repo, target_url" },
+                { error: "Missing required fields: owner, repo, target_url (set in .env or request body)" },
                 { status: 400 }
             );
         }

@@ -12,6 +12,7 @@
 // Everything else stays the same.
 // ============================================================================
 
+import { execSync } from "child_process";
 import { GitHubMCPClient } from "./github-client";
 import { PlaywrightMCPClient } from "./playwright-client";
 import { TestRunner } from "./test-runner";
@@ -143,7 +144,47 @@ export class AgentOrchestrator {
           session_id: sessionId, status: results.failed > 0 ? "failed" : "completed", timestamp: ts(),
         });
 
-        // ── Step 4: Courier — report failures ───────────────────────────────
+        // ── Step 4: Healer (RCA + fix) via LangGraph AI Engine ──────────────
+        let healerOutput: import("./ai-engine-client").HealerResult | null = null;
+        if (results.failed > 0 && aiEngine.isConnected) {
+            console.log("🩺 Step 4: Healer agent running RCA via LangGraph...");
+            emitSessionEvent(sessionId, "agent.started", {
+              session_id: sessionId, agent_name: "healer", status: "started",
+              message: "Running root cause analysis", timestamp: ts(),
+            });
+
+            const targetResult = await this.getTargetRepoDiff();
+            const fallback = this.getRecentGitDiff();
+            const effectiveDiff = targetResult.diff || fallback.diff;
+            const effectiveFiles = targetResult.changedFiles.length ? targetResult.changedFiles : fallback.changedFiles;
+            if (effectiveDiff) {
+                console.log(`   📝 Got git diff (${effectiveDiff.length} chars, ${effectiveFiles.length} files)`);
+            }
+
+            try {
+                healerOutput = await aiEngine.runHealer({
+                    repoUrl: `${this.config.owner}/${this.config.repo}`,
+                    changedFiles: effectiveFiles,
+                    targetUrl: this.config.targetUrl,
+                    sessionId,
+                    testResults: results.results as import("./types").TestResult[],
+                    gitDiff: effectiveDiff,
+                    branch: this.config.branch,
+                });
+                if (healerOutput) {
+                    console.log(`   ✅ Healer: rca_type=${healerOutput.rca_type}, confidence=${healerOutput.confidence_score}`);
+                    emitSessionEvent(sessionId, "agent.completed", {
+                      session_id: sessionId, agent_name: "healer", status: "completed",
+                      message: `RCA: ${healerOutput.rca_type} (confidence ${healerOutput.confidence_score})`,
+                      timestamp: ts(),
+                    });
+                }
+            } catch (healerErr) {
+                console.warn(`   ⚠️  Healer failed: ${(healerErr as Error).message}`);
+            }
+        }
+
+        // ── Step 5: Courier — report failures ───────────────────────────────
         let courierResult: CourierResult | undefined;
         if (results.failed > 0) {
             // Notion: log test failure summary
@@ -161,58 +202,82 @@ export class AgentOrchestrator {
                 console.warn(`[Notion] test failure log failed: ${(e as Error).message}`)
             );
 
-            console.log("📨 Step 4: Courier agent reporting failures...");
-            const courier = new CourierAgent(this.config.githubToken);
-            try {
-                const failedTests = results.results
-                    .filter((r) => r.status === "failed")
-                    .map((r) => `- **${r.name}**: ${r.error ?? "unknown error"}`)
-                    .join("\n");
+            console.log("📨 Step 5: Courier agent reporting failures...");
 
-                courierResult = await courier.dispatch(
-                    sessionId,
-                    this.config.owner,
-                    this.config.repo,
-                    this.config.branch,
-                    `Test failures detected (${results.failed}/${results.total})`,
-                    `### Failed Tests\n\n${failedTests}\n\n### Summary\n- Total: ${results.total}\n- Passed: ${results.passed}\n- Failed: ${results.failed}\n- Duration: ${results.duration_ms}ms`,
-                    0.5 // Default to issue (no healer fix yet)
-                );
-                console.log(`   ✅ Courier: Created ${courierResult.type} ${courierResult.url ?? ""}\n`);
-                if (courierResult.success) {
-                  const eventName = courierResult.type === "pr" ? "courier.pr_created" : "courier.issue_created";
-                  emitSessionEvent(sessionId, eventName, {
+            // Use Healer's dispatch result when courier_execute already ran (PR/Issue created)
+            if (
+                healerOutput?.dispatch_result_type &&
+                (healerOutput.dispatch_result_url || healerOutput.dispatch_result_number)
+            ) {
+                courierResult = {
+                    success: true,
+                    type: healerOutput.dispatch_result_type as "pr" | "issue",
+                    url: healerOutput.dispatch_result_url ?? undefined,
+                    number: healerOutput.dispatch_result_number ?? undefined,
+                };
+                console.log(`   ✅ Courier (from Healer): Created ${courierResult.type} ${courierResult.url ?? ""}\n`);
+                const eventName = courierResult.type === "pr" ? "courier.pr_created" : "courier.issue_created";
+                emitSessionEvent(sessionId, eventName, {
                     session_id: sessionId, type: courierResult.type, url: courierResult.url, number: courierResult.number, timestamp: ts(),
-                  });
-                  await sessionManager.setCourierResult(sessionId, {
+                });
+                await sessionManager.setCourierResult(sessionId, {
                     type: courierResult.type, url: courierResult.url, number: courierResult.number,
-                  });
-
-                  // Notion: log PR or Issue creation
-                  if (courierResult.type === "pr" && courierResult.url) {
-                    reportPRCreated(
-                      this.config.repo, sessionId,
-                      courierResult.url, courierResult.number, 0.5
-                    ).catch((e) =>
-                      console.warn(`[Notion] PR log failed: ${(e as Error).message}`)
-                    );
-                  } else if (courierResult.type === "issue" && courierResult.url) {
-                    reportIssueCreated(
-                      this.config.repo, sessionId,
-                      courierResult.url, courierResult.number
-                    ).catch((e) =>
-                      console.warn(`[Notion] issue log failed: ${(e as Error).message}`)
-                    );
-                  }
+                });
+                if (courierResult.type === "pr" && courierResult.url) {
+                    reportPRCreated(this.config.repo, sessionId, courierResult.url, courierResult.number, 0.5)
+                        .catch((e) => console.warn(`[Notion] PR log failed: ${(e as Error).message}`));
+                } else if (courierResult.type === "issue" && courierResult.url) {
+                    reportIssueCreated(this.config.repo, sessionId, courierResult.url, courierResult.number)
+                        .catch((e) => console.warn(`[Notion] issue log failed: ${(e as Error).message}`));
                 }
-            } catch (courierErr) {
-                console.warn(`   ⚠️  Courier failed: ${(courierErr as Error).message}`);
-            } finally {
-                await courier.stop();
+            } else {
+                const courier = new CourierAgent(this.config.githubToken);
+                try {
+                    const failedTests = results.results
+                        .filter((r) => r.status === "failed")
+                        .map((r) => `- **${r.name}**: ${r.error ?? "unknown error"}`)
+                        .join("\n");
+
+                    const healerConfidence = healerOutput?.confidence_score ?? 0.5;
+                    const rcaSection = healerOutput
+                        ? `### Root Cause Analysis\n- **Type**: ${healerOutput.rca_type}\n- **Confidence**: ${(healerConfidence * 100).toFixed(0)}%\n\n${healerOutput.rca_report ?? ""}\n\n### Proposed Fix\n${healerOutput.proposed_fix ?? "N/A"}`
+                        : `### Root Cause Analysis\nHealer agent not available — manual investigation required.`;
+
+                    courierResult = await courier.dispatch(
+                        sessionId,
+                        this.config.owner,
+                        this.config.repo,
+                        this.config.branch,
+                        `Test failures detected (${results.failed}/${results.total})`,
+                        `### Failed Tests\n\n${failedTests}\n\n${rcaSection}\n\n### Summary\n- Total: ${results.total}\n- Passed: ${results.passed}\n- Failed: ${results.failed}\n- Duration: ${results.duration_ms}ms`,
+                        healerConfidence
+                    );
+                    console.log(`   ✅ Courier: Created ${courierResult.type} ${courierResult.url ?? ""}\n`);
+                    if (courierResult.success) {
+                        const eventName = courierResult.type === "pr" ? "courier.pr_created" : "courier.issue_created";
+                        emitSessionEvent(sessionId, eventName, {
+                            session_id: sessionId, type: courierResult.type, url: courierResult.url, number: courierResult.number, timestamp: ts(),
+                        });
+                        await sessionManager.setCourierResult(sessionId, {
+                            type: courierResult.type, url: courierResult.url, number: courierResult.number,
+                        });
+                        if (courierResult.type === "pr" && courierResult.url) {
+                            reportPRCreated(this.config.repo, sessionId, courierResult.url, courierResult.number, 0.5)
+                                .catch((e) => console.warn(`[Notion] PR log failed: ${(e as Error).message}`));
+                        } else if (courierResult.type === "issue" && courierResult.url) {
+                            reportIssueCreated(this.config.repo, sessionId, courierResult.url, courierResult.number)
+                                .catch((e) => console.warn(`[Notion] issue log failed: ${(e as Error).message}`));
+                        }
+                    }
+                } catch (courierErr) {
+                    console.warn(`   ⚠️  Courier failed: ${(courierErr as Error).message}`);
+                } finally {
+                    await courier.stop();
+                }
             }
         }
 
-        // ── Step 5: Write test files & open PR ──────────────────────────────
+        // ── Step 6: Write test files & open PR ──────────────────────────────
         let prResult: { url?: string; number?: number; files: string[] } | undefined;
         try {
             console.log("📝 Step 5: Writing tests & opening PR...");
@@ -487,6 +552,88 @@ export class AgentOrchestrator {
         }
 
         return plan;
+    }
+
+    // ── Git / GitHub Helpers ────────────────────────────────────────────────
+
+    /**
+     * Fetch recent diff from the target repo via GitHub API.
+     * Uses the last commit vs its parent so the Healer gets real code context.
+     */
+    private async getTargetRepoDiff(): Promise<{ diff: string; changedFiles: string[] }> {
+        const token = this.config.githubToken ?? process.env.GITHUB_PERSONAL_ACCESS_TOKEN ?? process.env.GITHUB_PAT;
+        const { owner, repo, branch } = this.config;
+        if (!token?.trim()) return { diff: "", changedFiles: [] };
+
+        try {
+            const branchRef = branch || "main";
+            const commitsRes = await fetch(
+                `https://api.github.com/repos/${owner}/${repo}/commits?sha=${branchRef}&per_page=2`,
+                {
+                    headers: {
+                        Authorization: `Bearer ${token}`,
+                        Accept: "application/vnd.github+json",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                    },
+                }
+            );
+            if (!commitsRes.ok) return { diff: "", changedFiles: [] };
+            const commits = (await commitsRes.json()) as Array<{ sha: string; parents?: Array<{ sha: string }> }>;
+            if (!commits?.length) return { diff: "", changedFiles: [] };
+
+            const headSha = commits[0].sha;
+            const parentSha = commits[0].parents?.[0]?.sha;
+            if (!parentSha) return { diff: "", changedFiles: [] };
+
+            const compareRes = await fetch(
+                `https://api.github.com/repos/${owner}/${repo}/compare/${parentSha}...${headSha}`,
+                {
+                    headers: {
+                        Authorization: `Bearer ${token}`,
+                        Accept: "application/vnd.github.diff",
+                    },
+                }
+            );
+            if (!compareRes.ok) return { diff: "", changedFiles: [] };
+            const diff = (await compareRes.text()).trim();
+
+            const filesRes = await fetch(
+                `https://api.github.com/repos/${owner}/${repo}/compare/${parentSha}...${headSha}`,
+                {
+                    headers: {
+                        Authorization: `Bearer ${token}`,
+                        Accept: "application/vnd.github+json",
+                    },
+                }
+            );
+            let changedFiles: string[] = [];
+            if (filesRes.ok) {
+                const data = (await filesRes.json()) as { files?: Array<{ filename: string }> };
+                changedFiles = (data.files ?? []).map((f) => f.filename);
+            }
+            return { diff, changedFiles };
+        } catch {
+            return { diff: "", changedFiles: [] };
+        }
+    }
+
+    /** Fallback: local git diff when target repo API is unavailable */
+    private getRecentGitDiff(): { diff: string; changedFiles: string[] } {
+        try {
+            const diff = execSync("git diff HEAD~1", {
+                cwd: process.cwd(),
+                encoding: "utf-8",
+                timeout: 5000,
+            }).trim();
+            const changedFiles = execSync("git diff --name-only HEAD~1", {
+                cwd: process.cwd(),
+                encoding: "utf-8",
+                timeout: 5000,
+            }).trim().split("\n").filter(Boolean);
+            return { diff, changedFiles };
+        } catch {
+            return { diff: "", changedFiles: [] };
+        }
     }
 
     // ── Utility ───────────────────────────────────────────────────────────

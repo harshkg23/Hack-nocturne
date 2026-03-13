@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from langgraph.graph import END, StateGraph
 
@@ -33,6 +33,31 @@ def build_phase1_graph():
     builder.set_entry_point("architect")
     builder.add_edge("architect", "run_tests")
     builder.add_edge("run_tests", "decision")
+    builder.add_conditional_edges(
+        "decision",
+        route_after_decision,
+        {
+            "healer": "healer",
+            "done": END,
+        },
+    )
+    builder.add_edge("healer", "courier_decision")
+    builder.add_edge("courier_decision", "courier_execute")
+    builder.add_edge("courier_execute", END)
+
+    return builder.compile()
+
+
+def build_healer_graph():
+    """Graph that starts at decision — used when test results are pre-supplied."""
+    builder = StateGraph(SentinelState)
+
+    builder.add_node("decision", decision_node)
+    builder.add_node("healer", healer_node)
+    builder.add_node("courier_decision", courier_decision_node)
+    builder.add_node("courier_execute", courier_execute_node)
+
+    builder.set_entry_point("decision")
     builder.add_conditional_edges(
         "decision",
         route_after_decision,
