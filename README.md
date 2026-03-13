@@ -92,7 +92,54 @@ npm run dev
 
 Visit **http://localhost:3000**
 
-### 5. Trigger the Agent Pipeline (API)
+### 5. Set Up Notion Integration
+
+SentinelQA automatically creates a Notion page every time an agent takes action.
+
+**Required: Create Notion Database with these properties:**
+
+| Property | Type |
+|---|---|
+| Name | Title |
+| Repo | Text |
+| Agent | Select |
+| Event | Select |
+| Confidence | Number |
+| PR Link | URL |
+| Status | Select |
+| Timestamp | Date |
+
+**Steps:**
+1. Go to [notion.so/my-integrations](https://www.notion.so/my-integrations) → **New Integration**
+2. Copy the **Internal Integration Token** → `NOTION_TOKEN` in `.env`
+3. Open your database → **Share** → invite your integration by name
+4. Copy the database ID from the URL: `notion.so/workspace/<DATABASE_ID>?v=...` → `NOTION_DATABASE_ID` in `.env`
+
+**Events that auto-create Notion pages:**
+- `Pipeline Start` — when a test run begins
+- `Test Failure` — when Watchdog detects failures (with logs)
+- `PR Created` — when Courier opens a GitHub PR
+- `Issue Created` — when Courier files a GitHub Issue
+- `Pipeline Complete` — final summary with pass/fail stats
+
+**Manual report via API:**
+```bash
+curl -X POST http://localhost:3000/api/agent/debug-report \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Login Failure Fix",
+    "repo": "Hack-karo",
+    "agent": "healer",
+    "event": "Fix Generated",
+    "confidence": 0.91,
+    "pr": "https://github.com/user/repo/pull/12",
+    "logs": "AssertionError: expected 200 got 401",
+    "rootCause": "Missing Authorization header in /api/auth/me",
+    "codeDiff": "- const session = await getSession()\n+ const session = await getServerSession(authOptions)"
+  }'
+```
+
+### 6. Trigger the Agent Pipeline (API)
 
 With both servers running, trigger the full pipeline via the API:
 

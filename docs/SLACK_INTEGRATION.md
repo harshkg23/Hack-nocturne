@@ -9,7 +9,7 @@
 
 ## Overview
 
-SentinelQA sends professional Slack notifications (using Block Kit) at every significant pipeline event so the team never has to poll a dashboard to know what's happening.
+SentinelQA sends professional Slack notifications (using Block Kit) at every significant pipeline event so the team never has to poll a dashboard to know what
 
 ```
   GitHub Commit Detected
