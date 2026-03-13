@@ -7,6 +7,7 @@
 // ============================================================================
 
 import type { TestResult, TestRunOutput } from "./types";
+import type { HealerOnlyResult } from "./ai-engine-client";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -197,35 +198,123 @@ export function generateTestFiles(
  * - Accessibility snapshots from failures
  * - Generated test file listing
  */
+export interface PRBodyOptions {
+  /** Original PR number this fix is for */
+  originalPrNumber?: number;
+  /** Original PR title */
+  originalPrTitle?: string;
+  /** Branch this fix was forked from (original PR's head) */
+  sourceBranch?: string;
+  /** Branch this PR targets (original PR's base, e.g. main) */
+  targetBranch?: string;
+  /** Files changed in the original PR (from diff) */
+  originalChangedFiles?: string[];
+}
+
 export function buildPRBody(
   sessionId: string,
   testPlan: string,
   results: TestRunOutput,
   files: GeneratedTestFile[],
-  codeContextLength: number
+  codeContextLength: number,
+  healerResult?: HealerOnlyResult | null,
+  prOptions?: PRBodyOptions
 ): string {
   const lines: string[] = [];
+  const hasHealerFix = ((healerResult?.file_edits?.length ?? 0) > 0 || healerResult?.proposed_patch?.trim()) && (healerResult?.confidence_score ?? 0) > 0.5;
+  const fixedFiles = healerResult?.file_edits?.map(e => e.file) ?? [];
 
   // Header
-  lines.push(`## 🛡️ SentinelQA — Auto-Generated Tests`);
+  if (hasHealerFix) {
+    lines.push(`## 🛡️ SentinelQA — Auto-Fix + E2E Tests`);
+  } else {
+    lines.push(`## 🛡️ SentinelQA — Auto-Generated Tests`);
+  }
   lines.push(``);
   lines.push(`**Session**: \`${sessionId}\``);
   lines.push(`**Generated**: ${new Date().toISOString()}`);
+  if (prOptions?.originalPrNumber) {
+    lines.push(`**Testing PR**: #${prOptions.originalPrNumber}${prOptions.originalPrTitle ? ` — ${prOptions.originalPrTitle}` : ""}`);
+  }
   lines.push(``);
 
-  // Pipeline steps
-  lines.push(`### 🔄 Pipeline Steps`);
-  lines.push(``);
-  lines.push(`| Step | Description | Status |`);
-  lines.push(`|------|-------------|--------|`);
-  lines.push(`| 1 | GitHub MCP — Read repository code (${codeContextLength} chars) | ✅ |`);
-  lines.push(`| 2 | AI Engine — Generate test plan (${testPlan.split("\n").length} lines) | ✅ |`);
-  lines.push(`| 3 | Playwright MCP — Execute tests in headless browser | ✅ |`);
-  lines.push(`| 4 | Test Writer — Generate Playwright spec files | ✅ |`);
-  lines.push(`| 5 | Courier — Push tests & open this PR | ✅ |`);
-  lines.push(``);
+  // What's in this PR — distinguishes original files from SentinelQA additions
+  if (prOptions?.originalPrNumber) {
+    lines.push(`### 📦 What's In This PR`);
+    lines.push(``);
+    lines.push(`This PR was branched from \`${prOptions.sourceBranch ?? "unknown"}\` (PR #${prOptions.originalPrNumber}) and targets \`${prOptions.targetBranch ?? "main"}\`.`);
+    lines.push(`It contains **all original PR files** plus SentinelQA additions:`);
+    lines.push(``);
+    lines.push(`| Category | Files | Description |`);
+    lines.push(`|----------|-------|-------------|`);
+    if (prOptions.originalChangedFiles?.length) {
+      lines.push(`| Original PR | ${prOptions.originalChangedFiles.length} files | From PR #${prOptions.originalPrNumber} (unchanged) |`);
+    }
+    if (fixedFiles.length > 0) {
+      lines.push(`| Healer Fixes | ${fixedFiles.length} files | Code changes to resolve test failures |`);
+    }
+    lines.push(`| Test Files | ${files.length} files | Auto-generated E2E tests |`);
+    lines.push(``);
 
-  // Results summary
+    if (fixedFiles.length > 0) {
+      lines.push(`> **Only ${fixedFiles.length + files.length} file(s) were added/modified by SentinelQA.** All other files are carried over from the original PR.`);
+      lines.push(``);
+    }
+  }
+
+  // Healer RCA + Fixes (the core section)
+  if (healerResult && results.failed > 0) {
+    lines.push(`### 🩺 Root Cause Analysis`);
+    lines.push(``);
+    lines.push(`| Field | Value |`);
+    lines.push(`|-------|-------|`);
+    lines.push(`| RCA Type | \`${healerResult.rca_type ?? "unknown"}\` |`);
+    lines.push(`| Confidence | ${((healerResult.confidence_score ?? 0) * 100).toFixed(0)}% |`);
+    if (healerResult.target_files?.length) {
+      lines.push(`| Target Files | ${healerResult.target_files.map(f => `\`${f}\``).join(", ")} |`);
+    }
+    lines.push(``);
+
+    if (healerResult.rca_report) {
+      lines.push(`**Analysis**: ${healerResult.rca_report}`);
+      lines.push(``);
+    }
+
+    if (healerResult.proposed_fix) {
+      lines.push(`**Proposed Fix**: ${healerResult.proposed_fix}`);
+      lines.push(``);
+    }
+
+    // Fixes applied — show clearly what changed
+    if (hasHealerFix && healerResult.file_edits?.length) {
+      lines.push(`### 🔧 Code Fixes Applied`);
+      lines.push(``);
+      lines.push(`The Healer agent modified **${healerResult.file_edits.length} file(s)** to resolve failing tests:`);
+      lines.push(``);
+
+      for (const edit of healerResult.file_edits) {
+        lines.push(`#### \`${edit.file}\``);
+        lines.push("```diff");
+        for (const searchLine of edit.search.split("\n")) {
+          lines.push(`- ${searchLine}`);
+        }
+        for (const replaceLine of edit.replace.split("\n")) {
+          lines.push(`+ ${replaceLine}`);
+        }
+        lines.push("```");
+        lines.push(``);
+      }
+    } else if (hasHealerFix && healerResult?.proposed_patch) {
+      lines.push(`### 🔧 Code Fixes Applied`);
+      lines.push(``);
+      lines.push("```diff");
+      lines.push(healerResult.proposed_patch);
+      lines.push("```");
+      lines.push(``);
+    }
+  }
+
+  // Test Results summary
   const passRate = results.total > 0 ? ((results.passed / results.total) * 100).toFixed(0) : "0";
   lines.push(`### 📊 Test Results`);
   lines.push(``);
@@ -238,7 +327,7 @@ export function buildPRBody(
   lines.push(`| Duration | ${results.duration_ms}ms |`);
   lines.push(``);
 
-  // Detailed results table
+  // Step-by-step results
   lines.push(`### 📋 Step-by-Step Results`);
   lines.push(``);
   lines.push(`| # | Test Step | Status | Duration |`);
@@ -251,7 +340,7 @@ export function buildPRBody(
   }
   lines.push(``);
 
-  // Failed test details with snapshots
+  // Failed test details with errors
   const failures = results.results.filter((r) => r.status === "failed");
   if (failures.length > 0) {
     lines.push(`### 🔍 Failure Details`);
@@ -267,7 +356,6 @@ export function buildPRBody(
       if (f.accessibility_snapshot) {
         lines.push(`**Page Snapshot** (accessibility tree at time of failure):`);
         lines.push(``);
-        // Truncate very long snapshots
         const snap = f.accessibility_snapshot.length > 2000
           ? f.accessibility_snapshot.substring(0, 2000) + "\n... (truncated)"
           : f.accessibility_snapshot;
@@ -280,6 +368,19 @@ export function buildPRBody(
     }
   }
 
+  // Pipeline steps
+  lines.push(`### 🔄 Pipeline Steps`);
+  lines.push(``);
+  lines.push(`| Step | Description | Status |`);
+  lines.push(`|------|-------------|--------|`);
+  lines.push(`| 1 | GitHub MCP — Read repository code (${codeContextLength} chars) | ✅ |`);
+  lines.push(`| 2 | AI Engine — Generate test plan (${testPlan.split("\n").length} lines) | ✅ |`);
+  lines.push(`| 3 | Playwright MCP — Execute tests in headless browser | ✅ |`);
+  lines.push(`| 4 | Healer — Root cause analysis${hasHealerFix ? " + code fix" : ""} | ${healerResult ? "✅" : "⏭️"} |`);
+  lines.push(`| 5 | Test Writer — Generate Playwright spec files | ✅ |`);
+  lines.push(`| 6 | Courier — Push ${hasHealerFix ? "fixes + tests" : "tests"} & open this PR | ✅ |`);
+  lines.push(``);
+
   // Generated files listing
   lines.push(`### 📁 Generated Test Files`);
   lines.push(``);
@@ -288,11 +389,9 @@ export function buildPRBody(
   }
   lines.push(``);
 
-  // Test plan
-  lines.push(`### 📝 AI-Generated Test Plan`);
-  lines.push(``);
+  // Test plan (collapsed)
   lines.push(`<details>`);
-  lines.push(`<summary>Click to expand test plan</summary>`);
+  lines.push(`<summary>📝 AI-Generated Test Plan</summary>`);
   lines.push(``);
   lines.push(testPlan);
   lines.push(``);
@@ -301,8 +400,11 @@ export function buildPRBody(
 
   // Footer
   lines.push(`---`);
-  lines.push(`*This PR was created automatically by the SentinelQA pipeline.*`);
-  lines.push(`*Tests were generated by the AI Architect agent and executed by the Playwright MCP server.*`);
+  if (hasHealerFix) {
+    lines.push(`*This PR was created automatically by the SentinelQA pipeline. Code fixes were generated by the Healer agent. Tests were generated by the Architect agent and executed via Playwright MCP.*`);
+  } else {
+    lines.push(`*This PR was created automatically by the SentinelQA pipeline. Tests were generated by the AI Architect agent and executed via Playwright MCP.*`);
+  }
 
   return lines.join("\n");
 }

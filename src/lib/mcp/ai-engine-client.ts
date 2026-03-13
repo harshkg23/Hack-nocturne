@@ -31,6 +31,25 @@ export interface HealerResult {
   dispatch_result_number: number | null;
 }
 
+export interface FileEdit {
+  file: string;
+  search: string;
+  replace: string;
+}
+
+export interface HealerOnlyResult {
+  session_id: string;
+  decision: string;
+  rca_type: string | null;
+  rca_report: string | null;
+  proposed_fix: string | null;
+  proposed_patch: string | null;
+  file_edits: FileEdit[] | null;
+  confidence_score: number | null;
+  fix_branch: string | null;
+  target_files: string[] | null;
+}
+
 // ── AI Engine Client ────────────────────────────────────────────────────────
 
 export class AIEngineClient {
@@ -114,18 +133,51 @@ export class AIEngineClient {
       test_results: opts.testResults,
       git_diff: opts.gitDiff ?? "",
       branch: opts.branch ?? "main",
-    });
+    }, 120_000);
+  }
+
+  // ── Healer Only (RCA + patch, no courier) ────────────────────────────────
+
+  /**
+   * Runs only the Healer agent (decision → healer → END) without courier.
+   * Returns the RCA analysis and proposed patch so the orchestrator can
+   * bundle code fixes into a unified PR alongside test scripts.
+   */
+  async runHealerOnly(opts: {
+    repoUrl: string;
+    changedFiles: string[];
+    targetUrl: string;
+    sessionId: string;
+    testResults: TestResult[];
+    gitDiff?: string;
+    branch?: string;
+  }): Promise<HealerOnlyResult> {
+    if (!this.baseUrl) {
+      throw new Error(
+        "AI_ENGINE_URL is required. No mocks — set AI_ENGINE_URL in .env."
+      );
+    }
+
+    return this.callRemote<HealerOnlyResult>("/run-healer", {
+      repo_url: opts.repoUrl,
+      changed_files: opts.changedFiles,
+      target_url: opts.targetUrl,
+      session_id: opts.sessionId,
+      test_results: opts.testResults,
+      git_diff: opts.gitDiff ?? "",
+      branch: opts.branch ?? "main",
+    }, 120_000);
   }
 
   // ── Remote call to Aaskar's service ───────────────────────────────────────
 
-  private async callRemote<T>(endpoint: string, body: unknown): Promise<T> {
+  private async callRemote<T>(endpoint: string, body: unknown, timeoutMs = 60_000): Promise<T> {
     const url = `${this.baseUrl}${endpoint}`;
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
 
     if (!res.ok) {

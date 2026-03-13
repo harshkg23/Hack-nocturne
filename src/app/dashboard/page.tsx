@@ -2241,10 +2241,10 @@ export default function DashboardPage() {
     courier: "Ready to notify…",
   });
   const [tests, setTests] = useState<TestResult[]>(INITIAL_TESTS);
-  const [owner, setOwner] = useState("Arpit529Srivastava");
-  const [repo, setRepo] = useState("Hack-karo");
+  const [owner, setOwner] = useState("harshkg23");
+  const [repo, setRepo] = useState("sample-dashboard-app");
   const [branch, setBranch] = useState("main");
-  const [targetUrl, setTargetUrl] = useState("http://localhost:3000");
+  const [targetUrl, setTargetUrl] = useState("http://localhost:5173");
   const [slackChannel, setSlackChannel] = useState("#sentinelqa");
   const [githubMcpMode, setGithubMcpMode] = useState<"docker" | "npx">("npx");
   const [prSearch, setPrSearch] = useState("");
@@ -2460,6 +2460,8 @@ export default function DashboardPage() {
             number: selectedPr.number,
             title: selectedPr.title,
             url: selectedPr.url,
+            headRef: selectedPr.headRef,
+            baseRef: selectedPr.baseRef,
           },
           slack_channel: slackChannel,
           session_id: sessionId,

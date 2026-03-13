@@ -20,7 +20,10 @@ import { sessionManager } from "./session-manager";
 import { CourierAgent, CourierResult } from "./courier";
 import { emitSessionEvent } from "../websocket/server";
 import { aiEngine } from "./ai-engine-client";
+import type { HealerOnlyResult } from "./ai-engine-client";
 import { generateTestFiles, buildPRBody } from "./test-writer";
+import type { PRBodyOptions } from "./test-writer";
+import { applyFileEdits, applyPatchToExistingBranch } from "../courier/apply-patch";
 import {
   reportPipelineStart,
   reportTestFailure,
@@ -32,12 +35,19 @@ import type { TestPlanInput, TestRunOutput } from "./types";
 
 // ── Orchestrator Config ─────────────────────────────────────────────────────
 
+export interface SelectedPrInfo {
+    number: number;
+    title: string;
+    headRef: string;
+    baseRef: string;
+}
+
 export interface OrchestratorConfig {
     /** GitHub repo owner */
     owner: string;
     /** GitHub repo name */
     repo: string;
-    /** Branch to watch */
+    /** Branch to watch (or PR head branch when running against a PR) */
     branch: string;
     /** Target URL of the deployed app to test */
     targetUrl: string;
@@ -47,6 +57,8 @@ export interface OrchestratorConfig {
     githubMcpMode?: "docker" | "npx";
     /** Optional client-provided session id for live progress tracking */
     sessionId?: string;
+    /** When testing a specific PR, its metadata (head/base branches) */
+    selectedPr?: SelectedPrInfo;
 }
 
 // ── Agent Orchestrator ──────────────────────────────────────────────────────
@@ -170,8 +182,9 @@ export class AgentOrchestrator {
           session_id: sessionId, status: results.failed > 0 ? "failed" : "completed", timestamp: ts(),
         });
 
-        // ── Step 4: Healer (RCA + fix) via LangGraph AI Engine ──────────────
-        let healerOutput: import("./ai-engine-client").HealerResult | null = null;
+        // ── Step 4: Healer (RCA + proposed fix) via LangGraph AI Engine ─────
+        let healerOutput: HealerOnlyResult | null = null;
+        let prChangedFiles: string[] = [];
         if (results.failed > 0 && aiEngine.isConnected) {
             console.log("🩺 Step 4: Healer agent running RCA via LangGraph...");
             emitSessionEvent(sessionId, "agent.started", {
@@ -183,12 +196,13 @@ export class AgentOrchestrator {
             const fallback = this.getRecentGitDiff();
             const effectiveDiff = targetResult.diff || fallback.diff;
             const effectiveFiles = targetResult.changedFiles.length ? targetResult.changedFiles : fallback.changedFiles;
+            prChangedFiles = effectiveFiles;
             if (effectiveDiff) {
                 console.log(`   📝 Got git diff (${effectiveDiff.length} chars, ${effectiveFiles.length} files)`);
             }
 
             try {
-                healerOutput = await aiEngine.runHealer({
+                healerOutput = await aiEngine.runHealerOnly({
                     repoUrl: `${this.config.owner}/${this.config.repo}`,
                     changedFiles: effectiveFiles,
                     targetUrl: this.config.targetUrl,
@@ -199,22 +213,29 @@ export class AgentOrchestrator {
                 });
                 if (healerOutput) {
                     console.log(`   ✅ Healer: rca_type=${healerOutput.rca_type}, confidence=${healerOutput.confidence_score}`);
+                    if (healerOutput.proposed_patch) {
+                        console.log(`   📋 Healer generated a code fix patch (${healerOutput.proposed_patch.length} chars)`);
+                    }
+                    if (healerOutput.proposed_fix) {
+                        console.log(`   💡 Proposed fix: ${healerOutput.proposed_fix.substring(0, 120)}...`);
+                    }
                     emitSessionEvent(sessionId, "agent.completed", {
                       session_id: sessionId, agent_name: "healer", status: "completed",
                       message: `RCA: ${healerOutput.rca_type} (confidence ${healerOutput.confidence_score})`,
                       timestamp: ts(),
                     });
+                    await sessionManager.updateAgentStatus(sessionId, "healer", "success");
                 }
             } catch (healerErr) {
                 console.warn(`   ⚠️  Healer failed: ${(healerErr as Error).message}`);
+                await sessionManager.updateAgentStatus(sessionId, "healer", "error");
             }
         }
 
-        // ── Step 5: Courier — report failures ───────────────────────────────
+        // ── Step 5: Courier — report failures via issue ─────────────────────
         let courierResult: CourierResult | undefined;
         if (results.failed > 0) {
             await sessionManager.updateAgentStatus(sessionId, "watchdog", "running");
-            // Notion: log test failure summary
             const failLogs = results.results
                 .filter((r) => r.status === "failed")
                 .map((r) => `FAIL  ${r.name}\n      ${r.error ?? "unknown error"}`)
@@ -229,76 +250,51 @@ export class AgentOrchestrator {
                 console.warn(`[Notion] test failure log failed: ${(e as Error).message}`)
             );
             await sessionManager.updateAgentStatus(sessionId, "watchdog", "success");
-            await sessionManager.updateAgentStatus(sessionId, "healer", "running");
-            await sessionManager.updateAgentStatus(sessionId, "healer", "success");
 
             console.log("📨 Step 5: Courier agent reporting failures...");
+            await sessionManager.updateAgentStatus(sessionId, "courier", "running");
+            const courier = new CourierAgent(this.config.githubToken);
+            try {
+                const failedTests = results.results
+                    .filter((r) => r.status === "failed")
+                    .map((r) => `- **${r.name}**: ${r.error ?? "unknown error"}`)
+                    .join("\n");
 
-            // Prefer courier result returned by LangGraph courier_execute (Python side)
-            if (
-                healerOutput?.dispatch_result_type &&
-                (healerOutput.dispatch_result_url || healerOutput.dispatch_result_number)
-            ) {
-                courierResult = {
-                    success: true,
-                    type: healerOutput.dispatch_result_type as "pr" | "issue",
-                    url: healerOutput.dispatch_result_url ?? undefined,
-                    number: healerOutput.dispatch_result_number ?? undefined,
-                };
+                const rcaSection = healerOutput
+                    ? `### Root Cause Analysis\n- **Type**: ${
+                          healerOutput.rca_type
+                      }\n- **Confidence**: ${((healerOutput.confidence_score ?? 0) * 100).toFixed(
+                          0
+                      )}%\n\n${healerOutput.rca_report ?? ""}\n\n### Proposed Fix\n${
+                          healerOutput.proposed_fix ?? "N/A"
+                      }`
+                    : `### Root Cause Analysis\nHealer agent not available — manual investigation required.`;
+
+                courierResult = await courier.createIssueReport({
+                    session_id: sessionId,
+                    owner: this.config.owner,
+                    repo: this.config.repo,
+                    title: `[SentinelQA] Test failures detected (${results.failed}/${results.total})`,
+                    body: `### Failed Tests\n\n${failedTests}\n\n${rcaSection}\n\n### Summary\n- Total: ${results.total}\n- Passed: ${results.passed}\n- Failed: ${results.failed}\n- Duration: ${results.duration_ms}ms`,
+                    labels: ["sentinel-qa", "bug"],
+                });
                 console.log(
-                    `   ✅ Courier (from Healer): Created ${courierResult.type} ${courierResult.url ?? ""}\n`
+                    `   ✅ Courier: Created ${courierResult.type} ${courierResult.url ?? ""}\n`
                 );
-            } else {
-                // Fallback: orchestrator calls CourierAgent directly
-                await sessionManager.updateAgentStatus(sessionId, "courier", "running");
-                const courier = new CourierAgent(this.config.githubToken);
-                try {
-                    const failedTests = results.results
-                        .filter((r) => r.status === "failed")
-                        .map((r) => `- **${r.name}**: ${r.error ?? "unknown error"}`)
-                        .join("\n");
-
-                    const healerConfidence = healerOutput?.confidence_score ?? 0.5;
-                    const rcaSection = healerOutput
-                        ? `### Root Cause Analysis\n- **Type**: ${
-                              healerOutput.rca_type
-                          }\n- **Confidence**: ${(healerConfidence * 100).toFixed(
-                              0
-                          )}%\n\n${healerOutput.rca_report ?? ""}\n\n### Proposed Fix\n${
-                              healerOutput.proposed_fix ?? "N/A"
-                          }`
-                        : `### Root Cause Analysis\nHealer agent not available — manual investigation required.`;
-
-                    courierResult = await courier.dispatch(
-                        sessionId,
-                        this.config.owner,
-                        this.config.repo,
-                        this.config.branch,
-                        `Test failures detected (${results.failed}/${results.total})`,
-                        `### Failed Tests\n\n${failedTests}\n\n${rcaSection}\n\n### Summary\n- Total: ${results.total}\n- Passed: ${results.passed}\n- Failed: ${results.failed}\n- Duration: ${results.duration_ms}ms`,
-                        healerConfidence
-                    );
-                    console.log(
-                        `   ✅ Courier: Created ${courierResult.type} ${courierResult.url ?? ""}\n`
-                    );
-                    if (courierResult.success) {
-                        await sessionManager.updateAgentStatus(sessionId, "courier", "success");
-                    } else {
-                        await sessionManager.updateAgentStatus(sessionId, "courier", "error");
-                    }
-                } catch (courierErr) {
-                    console.warn(`   ⚠️  Courier failed: ${(courierErr as Error).message}`);
+                if (courierResult.success) {
+                    await sessionManager.updateAgentStatus(sessionId, "courier", "success");
+                } else {
                     await sessionManager.updateAgentStatus(sessionId, "courier", "error");
-                } finally {
-                    await courier.stop();
                 }
+            } catch (courierErr) {
+                console.warn(`   ⚠️  Courier failed: ${(courierErr as Error).message}`);
+                await sessionManager.updateAgentStatus(sessionId, "courier", "error");
+            } finally {
+                await courier.stop();
             }
 
-            // Unified reporting regardless of which path produced the result
             if (courierResult && courierResult.success) {
-                const eventName =
-                    courierResult.type === "pr" ? "courier.pr_created" : "courier.issue_created";
-                emitSessionEvent(sessionId, eventName, {
+                emitSessionEvent(sessionId, "courier.issue_created", {
                     session_id: sessionId,
                     type: courierResult.type,
                     url: courierResult.url,
@@ -310,17 +306,7 @@ export class AgentOrchestrator {
                     url: courierResult.url,
                     number: courierResult.number,
                 });
-                if (courierResult.type === "pr" && courierResult.url) {
-                    reportPRCreated(
-                        this.config.repo,
-                        sessionId,
-                        courierResult.url,
-                        courierResult.number,
-                        0.5
-                    ).catch((e) =>
-                        console.warn(`[Notion] PR log failed: ${(e as Error).message}`)
-                    );
-                } else if (courierResult.type === "issue" && courierResult.url) {
+                if (courierResult.url) {
                     reportIssueCreated(
                         this.config.repo,
                         sessionId,
@@ -336,59 +322,139 @@ export class AgentOrchestrator {
             await sessionManager.updateAgentStatus(sessionId, "courier", "success");
         }
 
-        // ── Step 6: Write test files & open PR ──────────────────────────────
+        // ── Step 6: Unified PR — code fixes + test files ────────────────────
         let prResult: { url?: string; number?: number; files: string[] } | undefined;
+        const hasFileEdits = (healerOutput?.file_edits?.length ?? 0) > 0 && (healerOutput?.confidence_score ?? 0) > 0.5;
+        const hasHealerFix = hasFileEdits || (healerOutput?.proposed_patch?.trim() && (healerOutput?.confidence_score ?? 0) > 0.5);
         try {
-            console.log("📝 Step 5: Writing tests & opening PR...");
+            console.log("📝 Step 6: Writing tests & fixes, opening unified PR...");
             emitSessionEvent(sessionId, "agent.started", {
               session_id: sessionId, agent_name: "test-writer", status: "started",
-              message: "Generating Playwright test files", timestamp: ts(),
+              message: hasHealerFix
+                ? "Generating test files + applying healer code fixes"
+                : "Generating Playwright test files",
+              timestamp: ts(),
             });
 
             const testFiles = generateTestFiles(testPlan, this.config.targetUrl);
             const filePaths = testFiles.map((f) => f.path);
-            console.log(`   Generated ${testFiles.length} files: ${filePaths.join(", ")}`);
+            console.log(`   Generated ${testFiles.length} test files: ${filePaths.join(", ")}`);
 
-            // Create branch and push files via GitHub MCP
-            const branchName = `sentinelqa/tests-${sessionId.replace("pipeline_", "")}`;
-            const prTitle = `[SentinelQA] Auto-generated E2E tests (${results.passed}/${results.total} passed)`;
-            const prBody = buildPRBody(sessionId, testPlan, results, testFiles, codeContext.length);
+            const sessionSuffix = sessionId.replace("pipeline_", "");
+            const baseBranchName = healerOutput?.fix_branch?.trim() || "sentinelqa/fix";
+            const branchName = `${baseBranchName}-${sessionSuffix}`;
+
+            // When testing a PR, fork from the PR's head branch so all original
+            // PR files are included; the fix PR targets the PR's base (e.g. main).
+            const { selectedPr } = this.config;
+            const sourceBranch = selectedPr?.headRef || this.config.branch;
+            const targetBranch = selectedPr?.baseRef || this.config.branch;
+
+            const prTitle = hasHealerFix
+                ? selectedPr
+                    ? `[SentinelQA] Fix for PR #${selectedPr.number} (${healerOutput!.rca_type}) — ${results.passed}/${results.total} passed`
+                    : `[SentinelQA] Auto-fix + E2E tests (${healerOutput!.rca_type}) — ${results.passed}/${results.total} passed`
+                : selectedPr
+                    ? `[SentinelQA] E2E tests for PR #${selectedPr.number} (${results.passed}/${results.total} passed)`
+                    : `[SentinelQA] Auto-generated E2E tests (${results.passed}/${results.total} passed)`;
+
+            const prBodyOptions: PRBodyOptions = {
+                originalPrNumber: selectedPr?.number,
+                originalPrTitle: selectedPr?.title,
+                sourceBranch,
+                targetBranch,
+                originalChangedFiles: prChangedFiles.length > 0 ? prChangedFiles : undefined,
+            };
+            const prBody = buildPRBody(sessionId, testPlan, results, testFiles, codeContext.length, healerOutput, prBodyOptions);
 
             const ghClient = new GitHubMCPClient(this.config.githubToken);
             try {
                 await ghClient.start(this.config.githubMcpMode ?? "npx");
 
-                // Create a new branch
+                // 6a. Create branch from the PR's head (carries all original PR files)
+                console.log(`   📌 Branching from "${sourceBranch}" → "${branchName}"`);
                 const branchRes = await ghClient.createBranch(
                     this.config.owner, this.config.repo,
-                    branchName, this.config.branch
+                    branchName, sourceBranch
                 );
                 if (!branchRes.success) {
                     throw new Error(`Branch creation failed: ${branchRes.error}`);
                 }
-                console.log(`   ✅ Created branch: ${branchName}`);
+                console.log(`   ✅ Created branch: ${branchName} (from ${sourceBranch})`);
 
-                // Push all test files in one commit
+                // 6b. Apply healer code fixes (if available)
+                if (hasHealerFix) {
+                    console.log(`   🔧 Applying healer code fixes...`);
+                    const githubToken = this.config.githubToken
+                        ?? process.env.GITHUB_PERSONAL_ACCESS_TOKEN
+                        ?? process.env.GITHUB_PAT ?? "";
+
+                    let fixApplied = false;
+
+                    if (hasFileEdits && healerOutput!.file_edits!.length > 0) {
+                        console.log(`   📝 Applying ${healerOutput!.file_edits!.length} search/replace edit(s)...`);
+                        const editResult = await applyFileEdits({
+                            owner: this.config.owner,
+                            repo: this.config.repo,
+                            branch: branchName,
+                            edits: healerOutput!.file_edits!,
+                            sessionId,
+                            githubToken,
+                        });
+                        fixApplied = editResult.success;
+                        if (editResult.success) {
+                            console.log(`   ✅ Healer code fixes applied via search/replace`);
+                        } else {
+                            console.warn(`   ⚠️  File edits failed: ${editResult.error}`);
+                        }
+                    }
+
+                    if (!fixApplied && healerOutput?.proposed_patch?.trim()) {
+                        console.log(`   🔄 Falling back to unified diff patch...`);
+                        const patchResult = await applyPatchToExistingBranch({
+                            owner: this.config.owner,
+                            repo: this.config.repo,
+                            branch: branchName,
+                            proposedPatch: healerOutput.proposed_patch,
+                            sessionId,
+                            githubToken,
+                        });
+                        fixApplied = patchResult.success;
+                        if (patchResult.success) {
+                            console.log(`   ✅ Healer code fixes applied via unified diff`);
+                        } else {
+                            console.warn(`   ⚠️  Unified diff also failed: ${patchResult.error}`);
+                        }
+                    }
+
+                    if (!fixApplied) {
+                        console.warn(`   ❌ Could not apply healer fixes — PR will contain tests only`);
+                    }
+                }
+
+                // 6c. Push test files
                 const pushRes = await ghClient.pushFiles(
                     this.config.owner, this.config.repo, branchName,
                     testFiles.map((f) => ({ path: f.path, content: f.content })),
-                    `test(e2e): auto-generated by SentinelQA pipeline\n\nSession: ${sessionId}\nTests: ${results.passed}/${results.total} passed`
+                    hasHealerFix
+                        ? `fix+test(e2e): SentinelQA healer fix + auto-generated tests\n\nSession: ${sessionId}\nRCA: ${healerOutput?.rca_type ?? "unknown"}\nTests: ${results.passed}/${results.total} passed`
+                        : `test(e2e): auto-generated by SentinelQA pipeline\n\nSession: ${sessionId}\nTests: ${results.passed}/${results.total} passed`
                 );
                 if (!pushRes.success) {
                     throw new Error(`File push failed: ${pushRes.error}`);
                 }
                 console.log(`   ✅ Pushed ${testFiles.length} test files`);
 
-                // Open PR
+                // 6d. Open fix PR targeting the base branch (e.g. main)
+                console.log(`   📬 Opening PR: ${branchName} → ${targetBranch}`);
                 const prRes = await ghClient.createPullRequest(
                     this.config.owner, this.config.repo,
-                    prTitle, prBody, branchName, this.config.branch
+                    prTitle, prBody, branchName, targetBranch
                 );
                 if (!prRes.success) {
                     throw new Error(`PR creation failed: ${prRes.error}`);
                 }
 
-                // Extract PR data
                 const prText = prRes.content?.find((c) => c.type === "text")?.text ?? "{}";
                 let prUrl: string | undefined;
                 let prNum: number | undefined;
@@ -397,7 +463,6 @@ export class AgentOrchestrator {
                     prUrl = parsed.html_url ?? parsed.url;
                     prNum = parsed.number;
                 } catch {
-                    // Try regex fallback
                     const urlMatch = prText.match(/https:\/\/github\.com\/[^\s"]+\/pull\/\d+/);
                     if (urlMatch) prUrl = urlMatch[0];
                     const numMatch = prText.match(/"number":\s*(\d+)/);
@@ -405,18 +470,25 @@ export class AgentOrchestrator {
                 }
 
                 prResult = { url: prUrl, number: prNum, files: filePaths };
-                console.log(`   ✅ Opened PR #${prNum ?? "?"}: ${prUrl ?? "(url pending)"}\n`);
+                console.log(`   ✅ Opened PR #${prNum ?? "?"}: ${prUrl ?? "(url pending)"}`);
+                if (hasHealerFix) {
+                    console.log(`   🩺 PR includes healer code fixes for: ${healerOutput!.rca_type}`);
+                }
+                if (selectedPr) {
+                    console.log(`   🔗 Fix PR branches from PR #${selectedPr.number}'s head — all original files included\n`);
+                }
 
                 emitSessionEvent(sessionId, "courier.pr_created", {
                   session_id: sessionId, type: "pr",
-                  url: prUrl, number: prNum, timestamp: ts(),
+                  url: prUrl, number: prNum,
+                  includes_fix: hasHealerFix,
+                  timestamp: ts(),
                 });
 
-                // Notion: log auto-test PR creation
                 if (prUrl) {
                   reportPRCreated(
                     this.config.repo, sessionId, prUrl, prNum,
-                    results.failed === 0 ? 0.95 : 0.7
+                    healerOutput?.confidence_score ?? (results.failed === 0 ? 0.95 : 0.7)
                   ).catch((e) =>
                     console.warn(`[Notion] test PR log failed: ${(e as Error).message}`)
                   );
@@ -425,7 +497,7 @@ export class AgentOrchestrator {
                 await ghClient.stop();
             }
         } catch (prErr) {
-            console.warn(`   ⚠️  Test PR creation failed: ${(prErr as Error).message}`);
+            console.warn(`   ⚠️  PR creation failed: ${(prErr as Error).message}`);
             console.warn(`   Tests were generated but could not be pushed to GitHub.`);
         }
 
@@ -626,13 +698,47 @@ export class AgentOrchestrator {
      */
     private async getTargetRepoDiff(): Promise<{ diff: string; changedFiles: string[] }> {
         const token = this.config.githubToken ?? process.env.GITHUB_PERSONAL_ACCESS_TOKEN ?? process.env.GITHUB_PAT;
-        const { owner, repo, branch } = this.config;
+        const { owner, repo, branch, selectedPr } = this.config;
         if (!token?.trim()) return { diff: "", changedFiles: [] };
 
         try {
+            // When a PR is selected, compare baseRef...headRef directly
+            if (selectedPr) {
+                const base = selectedPr.baseRef || "main";
+                const head = selectedPr.headRef || branch;
+                console.log(`[Diff] Comparing PR #${selectedPr.number}: ${base}...${head}`);
+
+                const compareRes = await fetch(
+                    `https://api.github.com/repos/${owner}/${repo}/compare/${base}...${head}`,
+                    {
+                        headers: {
+                            Authorization: `Bearer ${token}`,
+                            Accept: "application/vnd.github.diff",
+                        },
+                    }
+                );
+                if (!compareRes.ok) return { diff: "", changedFiles: [] };
+                const diff = (await compareRes.text()).trim();
+
+                const filesRes = await fetch(
+                    `https://api.github.com/repos/${owner}/${repo}/compare/${base}...${head}`,
+                    {
+                        headers: {
+                            Authorization: `Bearer ${token}`,
+                            Accept: "application/vnd.github+json",
+                        },
+                    }
+                );
+                let changedFiles: string[] = [];
+                if (filesRes.ok) {
+                    const data = (await filesRes.json()) as { files?: Array<{ filename: string }> };
+                    changedFiles = (data.files ?? []).map((f) => f.filename);
+                }
+                console.log(`[Diff] PR #${selectedPr.number}: ${changedFiles.length} files changed`);
+                return { diff, changedFiles };
+            }
+
             const branchRef = branch || "main";
-            // Fetch last 10 commits so we capture the intentional breakage
-            // even when later commits (test files, AI-engine tweaks) are on top.
             const commitsRes = await fetch(
                 `https://api.github.com/repos/${owner}/${repo}/commits?sha=${branchRef}&per_page=10`,
                 {
@@ -647,7 +753,6 @@ export class AgentOrchestrator {
             const commits = (await commitsRes.json()) as Array<{ sha: string; parents?: Array<{ sha: string }> }>;
             if (!commits?.length) return { diff: "", changedFiles: [] };
 
-            // Compare HEAD (newest) vs oldest among the fetched commits
             const headSha = commits[0].sha;
             const baseSha = commits[commits.length - 1].parents?.[0]?.sha ?? commits[commits.length - 1].sha;
 

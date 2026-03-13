@@ -71,3 +71,28 @@ def build_healer_graph():
     builder.add_edge("courier_execute", END)
 
     return builder.compile()
+
+
+def build_healer_only_graph():
+    """Healer-only graph: decision → healer → END.
+
+    Returns RCA + proposed patch without executing courier actions, so the
+    caller (Next.js orchestrator) can bundle fixes into a unified PR.
+    """
+    builder = StateGraph(SentinelState)
+
+    builder.add_node("decision", decision_node)
+    builder.add_node("healer", healer_node)
+
+    builder.set_entry_point("decision")
+    builder.add_conditional_edges(
+        "decision",
+        route_after_decision,
+        {
+            "healer": "healer",
+            "done": END,
+        },
+    )
+    builder.add_edge("healer", END)
+
+    return builder.compile()

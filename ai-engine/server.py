@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-from sentinel.graph import build_phase1_graph, build_healer_graph
+from sentinel.graph import build_phase1_graph, build_healer_graph, build_healer_only_graph
 from sentinel.state import SentinelState
 
 load_dotenv()
@@ -26,6 +26,7 @@ app = FastAPI(
 # Compile graphs once at startup — reused for every request
 _phase1_graph = build_phase1_graph()
 _healer_graph = build_healer_graph()
+_healer_only_graph = build_healer_only_graph()
 
 # ── Request/Response Models ─────────────────────────────────────────────────
 
@@ -87,6 +88,36 @@ class RunPipelineResponse(BaseModel):
     dispatch_result_type: str | None = None
     dispatch_result_url: str | None = None
     dispatch_result_number: int | None = None
+
+
+class RunHealerRequest(BaseModel):
+    repo_url: str
+    changed_files: list[str] = []
+    target_url: str
+    branch: str | None = "main"
+    git_diff: str | None = None
+    test_results: list[dict[str, Any]]
+    session_id: str | None = None
+    force_mock: bool = False
+
+
+class FileEdit(BaseModel):
+    file: str
+    search: str
+    replace: str
+
+
+class RunHealerResponse(BaseModel):
+    session_id: str
+    decision: str
+    rca_type: str | None = None
+    rca_report: str | None = None
+    proposed_fix: str | None = None
+    proposed_patch: str | None = None
+    file_edits: list[FileEdit] | None = None
+    confidence_score: float | None = None
+    fix_branch: str | None = None
+    target_files: list[str] | None = None
 
 
 # ── Endpoints ───────────────────────────────────────────────────────────────
@@ -211,6 +242,55 @@ async def run_pipeline(request: RunPipelineRequest):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Pipeline execution failed: {e}")
+
+
+@app.post("/run-healer", response_model=RunHealerResponse)
+async def run_healer(request: RunHealerRequest):
+    """
+    Run only the Healer agent (RCA + proposed fix) without courier actions.
+
+    Uses the healer-only graph: decision → healer → END.
+    Returns the RCA analysis and proposed patch so the caller can bundle
+    code fixes into a unified PR alongside test scripts.
+    """
+    try:
+        from uuid import uuid4
+
+        initial_state: SentinelState = {
+            "repo_url": request.repo_url,
+            "changed_files": request.changed_files,
+            "target_url": request.target_url,
+            "git_diff": request.git_diff or "",
+            "session_id": request.session_id or f"healer_{uuid4().hex}",
+            "branch": request.branch or "main",
+            "test_results": request.test_results,
+            "force_mock": request.force_mock,
+        }
+
+        result = _healer_only_graph.invoke(initial_state)
+
+        raw_edits = result.get("file_edits") or []
+        file_edits = [
+            FileEdit(file=e["file"], search=e["search"], replace=e["replace"])
+            for e in raw_edits
+            if isinstance(e, dict) and e.get("file") and e.get("search") and "replace" in e
+        ]
+
+        return RunHealerResponse(
+            session_id=str(result.get("session_id", "")),
+            decision=str(result.get("decision", "")),
+            rca_type=result.get("rca_type"),
+            rca_report=result.get("rca_report"),
+            proposed_fix=result.get("proposed_fix"),
+            proposed_patch=result.get("proposed_patch"),
+            file_edits=file_edits if file_edits else None,
+            confidence_score=result.get("confidence_score"),
+            fix_branch=result.get("fix_branch"),
+            target_files=result.get("target_files"),
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Healer execution failed: {e}")
 
 
 @app.post("/analyze-failure", response_model=AnalyzeFailureResponse)

@@ -62,7 +62,7 @@ export async function POST(request: NextRequest) {
             target_url?: string;
             github_token?: string;
             github_mcp_mode?: "docker" | "npx";
-            selected_pr?: { number?: number; title?: string; url?: string };
+            selected_pr?: { number?: number; title?: string; url?: string; headRef?: string; baseRef?: string };
             slack_channel?: string;
             session_id?: string;
         };
@@ -90,14 +90,22 @@ export async function POST(request: NextRequest) {
             channel: slackChannel,
         });
 
+        const effectiveBranch = selected_pr?.headRef || branch;
+
         const orchestrator = new AgentOrchestrator({
             owner,
             repo,
-            branch,
+            branch: effectiveBranch,
             targetUrl: target_url,
             githubToken: github_token,
             githubMcpMode: github_mcp_mode,
             sessionId: session_id,
+            selectedPr: selected_pr?.number ? {
+                number: selected_pr.number,
+                title: selected_pr.title ?? "",
+                headRef: selected_pr.headRef ?? effectiveBranch,
+                baseRef: selected_pr.baseRef ?? branch,
+            } : undefined,
         });
 
         const { codeContext, testPlan, results, courier, pr } =

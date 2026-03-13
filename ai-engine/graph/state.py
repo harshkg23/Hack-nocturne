@@ -19,6 +19,7 @@ class SentinelState(TypedDict, total=False):
     rca_report: str
     proposed_fix: str
     proposed_patch: str
+    file_edits: list[dict[str, str]]
     target_files: list[str]
     confidence_score: float
     fix_branch: str
