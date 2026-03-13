@@ -84,6 +84,18 @@ interface TestResult {
   error?: string;
 }
 
+interface OpenPullRequest {
+  number: number;
+  title: string;
+  state: string;
+  url: string;
+  author: string;
+  headRef: string;
+  baseRef: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 // ─── Agent Configs ────────────────────────────────────────────────────────────
 
 const AGENTS = [
@@ -1637,50 +1649,42 @@ function RcaTab({ stage }: { stage: PipelineStage }) {
 
 // ─── PR Tracker Tab ───────────────────────────────────────────────────────────
 
-const MOCK_PRS = [
-  {
-    id: 47,
-    title: "fix: update checkout button selector for test stability",
-    branch: "sentinel/fix-checkout-selector",
-    status: "open",
-    confidence: 94,
-    time: "Just now",
-    tests: "13/14",
-    author: "SentinelQA Bot",
-    url: "#",
-  },
-  {
-    id: 39,
-    title: "fix: update profile avatar locator — data-testid migration",
-    branch: "sentinel/fix-profile-avatar",
-    status: "merged",
-    confidence: 88,
-    time: "2h ago",
-    tests: "14/14",
-    author: "SentinelQA Bot",
-    url: "#",
-  },
-  {
-    id: 31,
-    title: "fix: search results container selector changed",
-    branch: "sentinel/fix-search-container",
-    status: "merged",
-    confidence: 91,
-    time: "1d ago",
-    tests: "14/14",
-    author: "SentinelQA Bot",
-    url: "#",
-  },
-];
+function PrsTab({
+  pullRequests,
+  loading,
+  error,
+  selectedPrNumber,
+  onSelect,
+  onRefresh,
+}: {
+  pullRequests: OpenPullRequest[];
+  loading: boolean;
+  error: string;
+  selectedPrNumber: number | null;
+  onSelect: (prNumber: number) => void;
+  onRefresh: () => void;
+}) {
+  const openCount = pullRequests.filter((pr) => pr.state === "open").length;
 
-function PrsTab() {
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-3 gap-3">
         {[
-          { label: "Total PRs", value: "12", color: "text-foreground" },
-          { label: "Merged", value: "10", color: "text-emerald-400" },
-          { label: "Open", value: "1", color: "text-amber-400" },
+          {
+            label: "Loaded PRs",
+            value: String(pullRequests.length),
+            color: "text-foreground",
+          },
+          {
+            label: "Selected",
+            value: selectedPrNumber ? `#${selectedPrNumber}` : "None",
+            color: "text-cyan-400",
+          },
+          {
+            label: "Open",
+            value: String(openCount),
+            color: "text-amber-400",
+          },
         ].map((s) => (
           <div
             key={s.label}
@@ -1692,57 +1696,93 @@ function PrsTab() {
         ))}
       </div>
 
+      <div className="flex items-center justify-between gap-3 glass rounded-xl border border-border/40 p-3">
+        <p className="text-xs text-muted-foreground">
+          Open PRs from GitHub MCP for your selected repository.
+        </p>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={onRefresh}
+          disabled={loading}
+          className="gap-1.5 border-border/50"
+        >
+          {loading ? (
+            <>
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              Refreshing
+            </>
+          ) : (
+            <>
+              <RefreshCcw className="w-3.5 h-3.5" />
+              Refresh
+            </>
+          )}
+        </Button>
+      </div>
+
+      {error ? (
+        <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-300">
+          {error}
+        </div>
+      ) : null}
+
       <div className="space-y-3">
-        {MOCK_PRS.map((pr) => (
+        {pullRequests.length === 0 && !loading ? (
+          <div className="glass rounded-xl border border-border/40 p-5 text-sm text-muted-foreground">
+            No open pull requests found for this repository.
+          </div>
+        ) : null}
+
+        {pullRequests.map((pr) => (
           <div
-            key={pr.id}
-            className={`glass rounded-xl border p-5 ${pr.status === "open" ? "border-amber-500/30 bg-amber-500/5" : "border-border/40"}`}
+            key={pr.number}
+            role="button"
+            tabIndex={0}
+            onClick={() => onSelect(pr.number)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onSelect(pr.number);
+              }
+            }}
+            className={`glass rounded-xl border p-5 cursor-pointer transition-colors ${selectedPrNumber === pr.number ? "border-blue-500/70 bg-blue-500/15" : "border-border/40"}`}
           >
             <div className="flex items-start justify-between gap-4">
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 mb-2">
                   <span
-                    className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
-                      pr.status === "open"
-                        ? "bg-amber-500/10 text-amber-400 border-amber-500/30"
-                        : "bg-emerald-500/10 text-emerald-400 border-emerald-500/30"
-                    }`}
+                    className="text-[10px] font-bold px-2 py-0.5 rounded-full border bg-amber-500/10 text-amber-400 border-amber-500/30"
                   >
-                    {pr.status === "open" ? "● OPEN" : "✓ MERGED"}
+                    ● OPEN
                   </span>
                   <span className="text-[10px] text-muted-foreground">
-                    PR #{pr.id}
-                  </span>
-                  <span className="text-[10px] text-muted-foreground">·</span>
-                  <span className="text-[10px] text-muted-foreground">
-                    {pr.time}
+                    PR #{pr.number}
                   </span>
                 </div>
                 <h4 className="text-sm font-semibold text-foreground mb-1">
                   {pr.title}
                 </h4>
                 <p className="text-xs font-mono text-muted-foreground/60">
-                  {pr.branch}
+                  {pr.headRef} → {pr.baseRef}
                 </p>
               </div>
               <div className="text-right shrink-0">
-                <p className="text-lg font-black text-emerald-400">
-                  {pr.confidence}%
-                </p>
-                <p className="text-[10px] text-muted-foreground">confidence</p>
+                <p className="text-[10px] text-muted-foreground">author</p>
+                <p className="text-sm font-semibold text-foreground">{pr.author}</p>
               </div>
             </div>
             <div className="flex items-center gap-4 mt-3 pt-3 border-t border-border/30">
-              <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                <FlaskConical className="w-3 h-3" />
-                {pr.tests} tests
-              </div>
-              <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                <Bot className="w-3 h-3" />
-                {pr.author}
+              <div
+                className={`flex items-center gap-1.5 text-xs ${selectedPrNumber === pr.number ? "text-blue-300" : "text-muted-foreground"}`}
+              >
+                <CheckCircle2 className="w-3 h-3" />
+                {selectedPrNumber === pr.number ? "Selected" : "Click to select"}
               </div>
               <a
                 href={pr.url}
+                target="_blank"
+                rel="noreferrer"
                 className="ml-auto flex items-center gap-1 text-xs text-primary hover:text-primary/80 transition-colors"
               >
                 <Github className="w-3 h-3" /> View on GitHub{" "}
@@ -1761,43 +1801,183 @@ function PrsTab() {
 function PipelineTab({
   stage,
   agentStatuses,
+  owner,
+  repo,
+  branch,
+  targetUrl,
+  slackChannel,
+  githubMcpMode,
+  prSearch,
+  pullRequests,
+  selectedPrNumber,
+  prsLoading,
+  prsError,
+  onConfigChange,
+  onPrSearchChange,
+  onRefreshPrs,
+  onSelectPr,
   onRun,
   running,
 }: {
   stage: PipelineStage;
   agentStatuses: Record<string, AgentStatus>;
+  owner: string;
+  repo: string;
+  branch: string;
+  targetUrl: string;
+  slackChannel: string;
+  githubMcpMode: "docker" | "npx";
+  prSearch: string;
+  pullRequests: OpenPullRequest[];
+  selectedPrNumber: number | null;
+  prsLoading: boolean;
+  prsError: string;
+  onConfigChange: (field: string, value: string) => void;
+  onPrSearchChange: (value: string) => void;
+  onRefreshPrs: () => void;
+  onSelectPr: (prNumber: number) => void;
   onRun: () => void;
   running: boolean;
 }) {
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-lg font-bold text-foreground">
-            Multi-Agent Pipeline
-          </h2>
-          <p className="text-sm text-muted-foreground">
-            Real-time orchestration across all 5 AI agents
-          </p>
+      <div className="glass rounded-xl border border-border/40 p-4 space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-lg font-bold text-foreground">
+              Multi-Agent Pipeline
+            </h2>
+            <p className="text-sm text-muted-foreground">
+              Select a repository PR, then start the end-to-end flow with Slack notifications.
+            </p>
+          </div>
+          <Button
+            onClick={onRun}
+            disabled={running || !selectedPrNumber || !owner || !repo || !targetUrl}
+            className="glow-cyan bg-primary text-primary-foreground hover:bg-primary/90 gap-2"
+          >
+            {running ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Running…
+              </>
+            ) : (
+              <>
+                <Play className="w-4 h-4" />
+                Start Flow
+              </>
+            )}
+          </Button>
         </div>
-        <Button
-          onClick={onRun}
-          disabled={running}
-          className="glow-cyan bg-primary text-primary-foreground hover:bg-primary/90 gap-2"
-        >
-          {running ? (
-            <>
-              <Loader2 className="w-4 h-4 animate-spin" />
-              Running…
-            </>
-          ) : (
-            <>
-              <Play className="w-4 h-4" />
-              Run Pipeline
-            </>
-          )}
-        </Button>
+
+        <div className="grid md:grid-cols-2 gap-3">
+          <input
+            value={owner}
+            onChange={(e) => onConfigChange("owner", e.target.value)}
+            placeholder="GitHub owner"
+            className="h-10 rounded-lg border border-border/50 bg-background/70 px-3 text-sm text-foreground"
+          />
+          <input
+            value={repo}
+            onChange={(e) => onConfigChange("repo", e.target.value)}
+            placeholder="Repository name"
+            className="h-10 rounded-lg border border-border/50 bg-background/70 px-3 text-sm text-foreground"
+          />
+          <input
+            value={branch}
+            onChange={(e) => onConfigChange("branch", e.target.value)}
+            placeholder="Base branch"
+            className="h-10 rounded-lg border border-border/50 bg-background/70 px-3 text-sm text-foreground"
+          />
+          <input
+            value={targetUrl}
+            onChange={(e) => onConfigChange("targetUrl", e.target.value)}
+            placeholder="Target URL"
+            className="h-10 rounded-lg border border-border/50 bg-background/70 px-3 text-sm text-foreground"
+          />
+          <input
+            value={slackChannel}
+            onChange={(e) => onConfigChange("slackChannel", e.target.value)}
+            placeholder="Slack channel (optional, e.g. #sentinelqa)"
+            className="h-10 rounded-lg border border-border/50 bg-background/70 px-3 text-sm text-foreground"
+          />
+          <select
+            value={githubMcpMode}
+            onChange={(e) => onConfigChange("githubMcpMode", e.target.value)}
+            className="h-10 rounded-lg border border-border/50 bg-background/70 px-3 text-sm text-foreground"
+          >
+            <option value="npx">GitHub MCP via npx</option>
+            <option value="docker">GitHub MCP via docker</option>
+          </select>
+        </div>
+
+        <div className="grid md:grid-cols-[1fr_auto] gap-3 items-center">
+          <input
+            value={prSearch}
+            onChange={(e) => onPrSearchChange(e.target.value)}
+            placeholder="Search open PRs by title, number, author, branch"
+            className="h-10 rounded-lg border border-border/50 bg-background/70 px-3 text-sm text-foreground"
+          />
+          <Button
+            type="button"
+            onClick={onRefreshPrs}
+            disabled={prsLoading || !owner || !repo}
+            variant="outline"
+            className="gap-2 border-border/50"
+          >
+            {prsLoading ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Loading PRs
+              </>
+            ) : (
+              <>
+                <RefreshCcw className="w-4 h-4" />
+                Load Open PRs
+              </>
+            )}
+          </Button>
+        </div>
+
+        {prsError ? (
+          <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+            {prsError}
+          </div>
+        ) : null}
+
+        <div className="rounded-xl border border-border/40 overflow-hidden">
+          <div className="max-h-64 overflow-y-auto divide-y divide-border/30">
+            {pullRequests.length === 0 && !prsLoading ? (
+              <div className="px-3 py-4 text-xs text-muted-foreground">
+                No open PRs loaded yet.
+              </div>
+            ) : (
+              pullRequests.map((pr) => (
+                <button
+                  key={pr.number}
+                  type="button"
+                  onClick={() => onSelectPr(pr.number)}
+                  className={`w-full text-left px-3 py-2.5 transition-colors ${selectedPrNumber === pr.number ? "bg-blue-500/20 border-l-2 border-blue-400" : "hover:bg-muted/30"}`}
+                >
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <span>PR #{pr.number}</span>
+                    <span>•</span>
+                    <span>{pr.author}</span>
+                    <span>•</span>
+                    <span>{pr.headRef} → {pr.baseRef}</span>
+                  </div>
+                  <div className="text-sm text-foreground truncate">{pr.title}</div>
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+
+        <p className="text-xs text-muted-foreground">
+          Selected PR: {selectedPrNumber ? `#${selectedPrNumber}` : "None"}
+        </p>
       </div>
+
       <PipelineFlowViz stage={stage} agentStatuses={agentStatuses} />
     </div>
   );
@@ -1831,6 +2011,18 @@ export default function DashboardPage() {
     courier: "Ready to notify…",
   });
   const [tests, setTests] = useState<TestResult[]>(INITIAL_TESTS);
+  const [owner, setOwner] = useState("Arpit529Srivastava");
+  const [repo, setRepo] = useState("Hack-karo");
+  const [branch, setBranch] = useState("main");
+  const [targetUrl, setTargetUrl] = useState("http://localhost:3000");
+  const [slackChannel, setSlackChannel] = useState("#sentinelqa");
+  const [githubMcpMode, setGithubMcpMode] = useState<"docker" | "npx">("npx");
+  const [prSearch, setPrSearch] = useState("");
+  const [openPrs, setOpenPrs] = useState<OpenPullRequest[]>([]);
+  const [selectedPrNumber, setSelectedPrNumber] = useState<number | null>(null);
+  const [prsLoading, setPrsLoading] = useState(false);
+  const [prsError, setPrsError] = useState("");
+  const [pipelineError, setPipelineError] = useState("");
 
   const addLines = useCallback((lines: TerminalLine[], offset = 0) => {
     lines.forEach((line, i) => {
@@ -1843,135 +2035,196 @@ export default function DashboardPage() {
     });
   }, []);
 
-  const runPipeline = useCallback(() => {
-    if (running) return;
+  const fetchPullRequests = useCallback(async () => {
+    if (!owner || !repo) return;
+
+    setPrsLoading(true);
+    setPrsError("");
+    try {
+      const query = new URLSearchParams({
+        owner,
+        repo,
+        state: "open",
+        github_mcp_mode: githubMcpMode,
+      });
+      if (prSearch.trim()) {
+        query.set("query", prSearch.trim());
+      }
+
+      const response = await fetch(`/api/agent/pull-requests?${query.toString()}`);
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data?.error ?? "Failed to load pull requests");
+      }
+
+      const prs = (data?.pull_requests ?? []) as OpenPullRequest[];
+      setOpenPrs(prs);
+      setSelectedPrNumber((prev) => {
+        if (prs.length === 0) return null;
+        const selectedStillExists = prev ? prs.some((pr) => pr.number === prev) : false;
+        return selectedStillExists ? prev : prs[0].number;
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to fetch pull requests";
+      setPrsError(message);
+      setOpenPrs([]);
+      setSelectedPrNumber(null);
+    } finally {
+      setPrsLoading(false);
+    }
+  }, [owner, repo, prSearch, githubMcpMode]);
+
+  useEffect(() => {
+    if (!owner || !repo) return;
+    void fetchPullRequests();
+  }, [fetchPullRequests, owner, repo]);
+
+  const runPipeline = useCallback(async () => {
+    if (running || !selectedPrNumber) return;
+
+    const selectedPr = openPrs.find((pr) => pr.number === selectedPrNumber);
+    if (!selectedPr) {
+      setPipelineError("Selected PR not found in loaded PR list.");
+      return;
+    }
+
+    setPipelineError("");
     setRunning(true);
+    setStage("architect");
     setTerminalLines([]);
-    setTests(INITIAL_TESTS);
+    setTests(INITIAL_TESTS.map((t) => ({ ...t, status: "pending", duration: "—" })));
     setAgentStatuses({
-      architect: "idle",
+      architect: "running",
       scripter: "idle",
       watchdog: "idle",
       healer: "idle",
       courier: "idle",
     });
+    setAgentTasks({
+      architect: `Analyzing PR #${selectedPr.number}...`,
+      scripter: "Awaiting test plan…",
+      watchdog: "Monitoring metrics…",
+      healer: "On standby…",
+      courier: "Ready to notify…",
+    });
 
-    // Stage 1: Architect (0–3s)
-    setTimeout(() => {
-      setStage("architect");
-      setAgentStatuses((p) => ({ ...p, architect: "running" }));
-      setAgentTasks((p) => ({
-        ...p,
-        architect: "Analyzing repo: sentinelqa/frontend…",
-      }));
-      addLines(STAGE_SCRIPTS.architect, 0);
-    }, 500);
+    addLines(
+      [
+        { text: `Pipeline triggered for ${owner}/${repo} PR #${selectedPr.number}`, type: "system", ts: "" },
+        { text: `Selected PR: ${selectedPr.title}`, type: "info", ts: "" },
+        { text: "Slack start notification queued...", type: "agent", ts: "" },
+      ],
+      0,
+    );
 
-    // Stage 2: Scripter (3–8s)
-    setTimeout(() => {
-      setStage("scripter");
-      setAgentStatuses((p) => ({
-        ...p,
-        architect: "success",
-        scripter: "running",
-      }));
-      setAgentTasks((p) => ({
-        ...p,
-        architect: "Generated 14-scenario test plan",
-        scripter: "Executing Playwright tests in headless Chromium…",
-      }));
-      addLines(STAGE_SCRIPTS.scripter, 0);
-    }, 3500);
+    try {
+      const response = await fetch("/api/agent/pipeline", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          owner,
+          repo,
+          branch,
+          target_url: targetUrl,
+          github_mcp_mode: githubMcpMode,
+          selected_pr: {
+            number: selectedPr.number,
+            title: selectedPr.title,
+            url: selectedPr.url,
+          },
+          slack_channel: slackChannel,
+        }),
+      });
 
-    // Tests start completing
-    setTimeout(() => {
-      setTests((prev) =>
-        prev.map((t, i) =>
-          i < 6 ? { ...t, status: "passed", duration: DURATIONS[i] } : t,
-        ),
-      );
-    }, 5000);
-    setTimeout(() => {
-      setTests((prev) =>
-        prev.map((t, i) =>
-          i === 6 ? { ...t, status: "failed", duration: DURATIONS[i] } : t,
-        ),
-      );
-    }, 6500);
-    setTimeout(() => {
-      setTests((prev) =>
-        prev.map((t, i) =>
-          i > 6 ? { ...t, status: "passed", duration: DURATIONS[i] } : t,
-        ),
-      );
-    }, 7500);
+      const data = await response.json();
 
-    // Stage 3: Watchdog (8–12s)
-    setTimeout(() => {
-      setStage("watchdog");
-      setAgentStatuses((p) => ({
-        ...p,
-        scripter: "error",
-        watchdog: "running",
-      }));
-      setAgentTasks((p) => ({
-        ...p,
-        scripter: "1 failure — .checkout-btn selector not found",
-        watchdog: "Querying Prometheus/Grafana/Datadog for anomalies…",
-      }));
-      addLines(STAGE_SCRIPTS.watchdog, 0);
-    }, 8500);
+      if (!response.ok) {
+        throw new Error(data?.error ?? "Pipeline execution failed");
+      }
 
-    // Stage 4: Healer (12–17s)
-    setTimeout(() => {
-      setStage("healer");
-      setAgentStatuses((p) => ({
-        ...p,
-        watchdog: "success",
-        healer: "running",
+      const results = data?.results;
+      const resultDetails = Array.isArray(results?.details) ? results.details : [];
+      const mappedTests: TestResult[] = resultDetails.slice(0, 14).map((test: any, index: number) => ({
+        id: index + 1,
+        name: String(test?.name ?? `Step ${index + 1}`),
+        flow: "Pipeline",
+        status: test?.status === "passed" ? "passed" : "failed",
+        duration: typeof test?.duration_ms === "number" ? `${(test.duration_ms / 1000).toFixed(1)}s` : "—",
+        error: test?.error ? String(test.error) : undefined,
       }));
-      setAgentTasks((p) => ({
-        ...p,
-        watchdog: "DOM mutation found — class renamed in commit a3f9c2b",
-        healer: "Performing RCA — querying vector DB for similar failures…",
-      }));
-      addLines(STAGE_SCRIPTS.healer, 0);
-    }, 13000);
+      if (mappedTests.length > 0) {
+        setTests(mappedTests);
+      }
 
-    // Stage 5: Courier PR (17–21s)
-    setTimeout(() => {
-      setStage("courier_pr");
-      setAgentStatuses((p) => ({
-        ...p,
-        healer: "success",
-        courier: "running",
-      }));
-      setAgentTasks((p) => ({
-        ...p,
-        healer: "Fix generated — confidence 94% ✓",
-        courier: "Creating GitHub PR #47 and notifying Slack…",
-      }));
-      addLines(STAGE_SCRIPTS.courier_pr, 0);
-    }, 18000);
-
-    // Complete (21s)
-    setTimeout(() => {
       setStage("complete");
-      setAgentStatuses((p) => ({ ...p, courier: "success" }));
-      setAgentTasks((p) => ({
-        ...p,
-        courier: "PR #47 created · Team notified on Slack",
-      }));
-      setRunning(false);
-    }, 21000);
-  }, [running, addLines]);
+      setAgentStatuses({
+        architect: "success",
+        scripter: results?.failed > 0 ? "error" : "success",
+        watchdog: results?.failed > 0 ? "success" : "idle",
+        healer: results?.failed > 0 ? "success" : "idle",
+        courier: "success",
+      });
+      setAgentTasks({
+        architect: `PR #${selectedPr.number} analyzed`,
+        scripter:
+          results?.failed > 0
+            ? `${results.failed} test(s) failed`
+            : `${results?.passed ?? 0} test(s) passed`,
+        watchdog: results?.failed > 0 ? "Anomalies analyzed" : "No anomalies",
+        healer: results?.failed > 0 ? "RCA prepared" : "No healing needed",
+        courier: "Slack + GitHub notifications completed",
+      });
 
-  // Auto-run on mount
-  useEffect(() => {
-    const t = setTimeout(runPipeline, 1500);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+      addLines(
+        [
+          {
+            text: `Pipeline completed. Passed: ${results?.passed ?? 0}/${results?.total ?? 0}`,
+            type: results?.failed > 0 ? "warn" : "success",
+            ts: "",
+          },
+          {
+            text: results?.failed > 0
+              ? "Failure summary sent to Slack and remediation pipeline triggered."
+              : "Success summary sent to Slack.",
+            type: "agent",
+            ts: "",
+          },
+        ],
+        0,
+      );
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Pipeline execution failed";
+      setPipelineError(message);
+      setStage("courier_issue");
+      setAgentStatuses((prev) => ({
+        ...prev,
+        architect: prev.architect === "running" ? "error" : prev.architect,
+        scripter: "error",
+        courier: "error",
+      }));
+      setAgentTasks((prev) => ({
+        ...prev,
+        courier: "Failed to dispatch notifications",
+      }));
+      addLines([{ text: `Pipeline error: ${message}`, type: "error", ts: "" }], 0);
+    } finally {
+      setRunning(false);
+    }
+  }, [
+    running,
+    selectedPrNumber,
+    openPrs,
+    owner,
+    repo,
+    branch,
+    targetUrl,
+    githubMcpMode,
+    slackChannel,
+    addLines,
+  ]);
 
   const TAB_TITLES: Record<Tab, string> = {
     overview: "Overview",
@@ -1982,6 +2235,17 @@ export default function DashboardPage() {
     rca: "RCA Reports",
     prs: "PR Tracker",
   };
+
+  const handleConfigChange = useCallback((field: string, value: string) => {
+    if (field === "owner") setOwner(value.trim());
+    if (field === "repo") setRepo(value.trim());
+    if (field === "branch") setBranch(value.trim());
+    if (field === "targetUrl") setTargetUrl(value.trim());
+    if (field === "slackChannel") setSlackChannel(value.trim());
+    if (field === "githubMcpMode") {
+      setGithubMcpMode(value === "docker" ? "docker" : "npx");
+    }
+  }, []);
 
   return (
     <div className="flex h-screen bg-background overflow-hidden">
@@ -2012,7 +2276,7 @@ export default function DashboardPage() {
             <Button
               size="sm"
               onClick={runPipeline}
-              disabled={running}
+              disabled={running || !selectedPrNumber || !owner || !repo || !targetUrl}
               className="glow-cyan bg-primary text-primary-foreground hover:bg-primary/90 gap-1.5 h-8 text-xs"
             >
               {running ? (
@@ -2052,6 +2316,12 @@ export default function DashboardPage() {
 
         {/* Page content */}
         <div className="flex-1 overflow-y-auto p-6">
+          {pipelineError ? (
+            <div className="mb-4 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-2 text-sm text-red-300">
+              {pipelineError}
+            </div>
+          ) : null}
+
           <AnimatePresence mode="wait">
             <motion.div
               key={activeTab}
@@ -2073,6 +2343,23 @@ export default function DashboardPage() {
                 <PipelineTab
                   stage={stage}
                   agentStatuses={agentStatuses}
+                  owner={owner}
+                  repo={repo}
+                  branch={branch}
+                  targetUrl={targetUrl}
+                  slackChannel={slackChannel}
+                  githubMcpMode={githubMcpMode}
+                  prSearch={prSearch}
+                  pullRequests={openPrs}
+                  selectedPrNumber={selectedPrNumber}
+                  prsLoading={prsLoading}
+                  prsError={prsError}
+                  onConfigChange={handleConfigChange}
+                  onPrSearchChange={setPrSearch}
+                  onRefreshPrs={() => {
+                    void fetchPullRequests();
+                  }}
+                  onSelectPr={setSelectedPrNumber}
                   onRun={runPipeline}
                   running={running}
                 />
@@ -2090,7 +2377,18 @@ export default function DashboardPage() {
                 </div>
               )}
               {activeTab === "rca" && <RcaTab stage={stage} />}
-              {activeTab === "prs" && <PrsTab />}
+              {activeTab === "prs" && (
+                <PrsTab
+                  pullRequests={openPrs}
+                  loading={prsLoading}
+                  error={prsError}
+                  selectedPrNumber={selectedPrNumber}
+                  onSelect={setSelectedPrNumber}
+                  onRefresh={() => {
+                    void fetchPullRequests();
+                  }}
+                />
+              )}
             </motion.div>
           </AnimatePresence>
         </div>
