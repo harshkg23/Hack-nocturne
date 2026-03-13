@@ -818,10 +818,12 @@ function Sidebar({
           {session ? (
             <div className="flex items-center gap-3 px-2 py-2 rounded-xl hover:bg-muted/30 transition-colors group">
               {user?.image ? (
-                <img
+                <Image
                   src={user.image}
                   referrerPolicy="no-referrer"
                   alt="avatar"
+                  width={32}
+                  height={32}
                   className="w-8 h-8 rounded-full object-cover ring-2 ring-primary/30 shrink-0"
                 />
               ) : (

@@ -219,14 +219,16 @@ export class AgentOrchestrator {
 
         // ── Step 5: Courier — report failures ───────────────────────────────
         let courierResult: CourierResult | undefined;
+
         if (results.failed > 0) {
-          await sessionManager.updateAgentStatus(sessionId, "watchdog", "running");
+            // Watchdog + healer statuses for the failure path
             await sessionManager.updateAgentStatus(sessionId, "watchdog", "running");
-            // Notion: log test failure summary
+
             const failLogs = results.results
                 .filter((r) => r.status === "failed")
                 .map((r) => `FAIL  ${r.name}\n      ${r.error ?? "unknown error"}`)
                 .join("\n\n");
+
             reportTestFailure(
                 this.config.repo,
                 sessionId,
@@ -236,42 +238,13 @@ export class AgentOrchestrator {
             ).catch((e) =>
                 console.warn(`[Notion] test failure log failed: ${(e as Error).message}`)
             );
+
             await sessionManager.updateAgentStatus(sessionId, "watchdog", "success");
             await sessionManager.updateAgentStatus(sessionId, "healer", "running");
             await sessionManager.updateAgentStatus(sessionId, "healer", "success");
 
-            console.log("📨 Step 4: Courier agent reporting failures...");
-            await sessionManager.updateAgentStatus(sessionId, "courier", "running");
-            const courier = new CourierAgent(this.config.githubToken);
-            try {
-                const failedTests = results.results
-                    .filter((r) => r.status === "failed")
-                    .map((r) => `- **${r.name}**: ${r.error ?? "unknown error"}`)
-                    .join("\n");
-
-                courierResult = await courier.dispatch(
-                    sessionId,
-                    this.config.owner,
-                    this.config.repo,
-                    this.config.branch,
-                    `Test failures detected (${results.failed}/${results.total})`,
-                    `### Failed Tests\n\n${failedTests}\n\n### Summary\n- Total: ${results.total}\n- Passed: ${results.passed}\n- Failed: ${results.failed}\n- Duration: ${results.duration_ms}ms`,
-                    0.5 // Default to issue (no healer fix yet)
-                );
-                console.log(`   ✅ Courier: Created ${courierResult.type} ${courierResult.url ?? ""}\n`);
-                if (courierResult.success) {
-                  await sessionManager.updateAgentStatus(sessionId, "courier", "success");
-                  const eventName = courierResult.type === "pr" ? "courier.pr_created" : "courier.issue_created";
-                  emitSessionEvent(sessionId, eventName, {
-                    session_id: sessionId, type: courierResult.type, url: courierResult.url, number: courierResult.number, timestamp: ts(),
-                  });
-                  await sessionManager.setCourierResult(sessionId, {
-                    type: courierResult.type, url: courierResult.url, number: courierResult.number,
-                  });
-
-                  // Notion: log PR or Issue creation
-                  if (courierResult.type === "pr" && courierResult.url) {
             console.log("📨 Step 5: Courier agent reporting failures...");
+            await sessionManager.updateAgentStatus(sessionId, "courier", "running");
 
             // Prefer courier result returned by LangGraph courier_execute (Python side)
             if (
@@ -289,7 +262,6 @@ export class AgentOrchestrator {
                 );
             } else {
                 // Fallback: orchestrator calls CourierAgent directly
-                await sessionManager.updateAgentStatus(sessionId, "courier", "running");
                 const courier = new CourierAgent(this.config.githubToken);
                 try {
                     const failedTests = results.results
@@ -320,64 +292,63 @@ export class AgentOrchestrator {
                     console.log(
                         `   ✅ Courier: Created ${courierResult.type} ${courierResult.url ?? ""}\n`
                     );
-                    if (courierResult.success) {
-                        await sessionManager.updateAgentStatus(sessionId, "courier", "success");
-                    } else {
-                        await sessionManager.updateAgentStatus(sessionId, "courier", "error");
-                    }
                 } catch (courierErr) {
                     console.warn(`   ⚠️  Courier failed: ${(courierErr as Error).message}`);
-                    await sessionManager.updateAgentStatus(sessionId, "courier", "error");
                 } finally {
+                    // Best effort cleanup
                     await courier.stop();
                 }
             }
 
-            // Unified reporting regardless of which path produced the result
             if (courierResult && courierResult.success) {
-                const eventName =
-                    courierResult.type === "pr" ? "courier.pr_created" : "courier.issue_created";
-                emitSessionEvent(sessionId, eventName, {
-                    session_id: sessionId,
-                    type: courierResult.type,
-                    url: courierResult.url,
-                    number: courierResult.number,
-                    timestamp: ts(),
-                });
-                await sessionManager.setCourierResult(sessionId, {
-                    type: courierResult.type,
-                    url: courierResult.url,
-                    number: courierResult.number,
-                });
-                if (courierResult.type === "pr" && courierResult.url) {
-                    reportPRCreated(
-                        this.config.repo,
-                        sessionId,
-                        courierResult.url,
-                        courierResult.number,
-                        0.5
-                    ).catch((e) =>
-                        console.warn(`[Notion] PR log failed: ${(e as Error).message}`)
-                    );
-                } else if (courierResult.type === "issue" && courierResult.url) {
-                    reportIssueCreated(
-                        this.config.repo,
-                        sessionId,
-                        courierResult.url,
-                        courierResult.number
-                    ).catch((e) =>
-                        console.warn(`[Notion] issue log failed: ${(e as Error).message}`)
-                    );
-                }
-            } catch (courierErr) {
-                console.warn(`   ⚠️  Courier failed: ${(courierErr as Error).message}`);
-                await sessionManager.updateAgentStatus(sessionId, "courier", "error");
-            } finally {
-                await courier.stop();
-            }
+                await sessionManager.updateAgentStatus(sessionId, "courier", "success");
             } else {
-              await sessionManager.updateAgentStatus(sessionId, "courier", "running");
-              await sessionManager.updateAgentStatus(sessionId, "courier", "success");
+                await sessionManager.updateAgentStatus(sessionId, "courier", "error");
+            }
+        } else {
+            // No failures; mark courier as successful no-op so UI shows green
+            await sessionManager.updateAgentStatus(sessionId, "courier", "running");
+            await sessionManager.updateAgentStatus(sessionId, "courier", "success");
+        }
+
+        // Unified reporting regardless of which path produced the result
+        if (courierResult && courierResult.success) {
+            const eventName =
+                courierResult.type === "pr" ? "courier.pr_created" : "courier.issue_created";
+            emitSessionEvent(sessionId, eventName, {
+                session_id: sessionId,
+                type: courierResult.type,
+                url: courierResult.url,
+                number: courierResult.number,
+                timestamp: ts(),
+            });
+            await sessionManager.setCourierResult(sessionId, {
+                type: courierResult.type,
+                url: courierResult.url,
+                number: courierResult.number,
+            });
+
+            // Notion: log PR or Issue creation
+            if (courierResult.type === "pr" && courierResult.url) {
+                reportPRCreated(
+                    this.config.repo,
+                    sessionId,
+                    courierResult.url,
+                    courierResult.number,
+                    healerOutput?.confidence_score ?? 0.5
+                ).catch((e) =>
+                    console.warn(`[Notion] PR log failed: ${(e as Error).message}`)
+                );
+            } else if (courierResult.type === "issue" && courierResult.url) {
+                reportIssueCreated(
+                    this.config.repo,
+                    sessionId,
+                    courierResult.url,
+                    courierResult.number
+                ).catch((e) =>
+                    console.warn(`[Notion] issue log failed: ${(e as Error).message}`)
+                );
+            }
         }
 
         // ── Step 6: Write test files & open PR ──────────────────────────────

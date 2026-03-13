@@ -87,13 +87,15 @@ function Avatar({
     : "?";
 
   if (image) {
+    // referrerPolicy="no-referrer" is required — Google/GitHub CDNs return 429
+    // when the Referer header is sent with strict-origin-when-cross-origin policy
     return (
-      // referrerPolicy="no-referrer" is required — Google/GitHub CDNs return 429
-      // when the Referer header is sent with strict-origin-when-cross-origin policy
-      <img
+      <Image
         src={image}
         alt={name ?? "avatar"}
         referrerPolicy="no-referrer"
+        width={size === "sm" ? 28 : 36}
+        height={size === "sm" ? 28 : 36}
         className={`${dim} rounded-full object-cover ring-2 ring-primary/40`}
       />
     );
