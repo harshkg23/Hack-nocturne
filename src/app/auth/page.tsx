@@ -257,7 +257,7 @@ function LoginForm({ callbackUrl }: { callbackUrl: string }) {
 
       <Field
         id="login-email"
-        label="Email-Broken"
+        label="Email address"
         type="email"
         placeholder="agent@sentinel.qa"
         icon={<Mail className="w-4 h-4" />}
@@ -298,7 +298,7 @@ function LoginForm({ callbackUrl }: { callbackUrl: string }) {
         ) : (
           <>
             <Play className="w-3.5 h-3.5" />
-            Sign-In-Broken
+            Sign In
           </>
         )}
       </Button>
@@ -552,7 +552,7 @@ function AuthPageContent() {
                     ${tab === t ? "text-primary" : "text-muted-foreground hover:text-foreground"}
                   `}
                 >
-                  {t === "login" ? "Sign In" : "Sign Up"}
+                  {t === "login" ? "Sign-In-Broken" : "Sign Up"}
                 </button>
               ))}
             </div>
