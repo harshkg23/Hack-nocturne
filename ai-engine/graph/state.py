@@ -4,6 +4,7 @@ from typing_extensions import TypedDict
 
 class SentinelState(TypedDict, total=False):
     repo_url: str
+    branch: str
     changed_files: list[str]
     git_diff: str
     target_url: str

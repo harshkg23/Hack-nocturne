@@ -27,8 +27,14 @@ def courier_decision_node(state: SentinelState) -> dict[str, object]:
             target_files_list = []
 
     repo_url = str(state.get("repo_url", "")).strip()
+    owner, repo = "", ""
+    if "/" in repo_url:
+        parts = repo_url.split("/", 1)
+        owner = (parts[0] or "").strip()
+        repo = (parts[1] or "").strip()
     session_id = str(state.get("session_id", "")).strip()
     fix_branch = str(state.get("fix_branch", "")).strip()
+    base_branch = str(state.get("branch", "main")).strip() or "main"
 
     can_create_pr = (
         float(confidence_score) > CONFIDENCE_THRESHOLD
@@ -84,5 +90,8 @@ def courier_decision_node(state: SentinelState) -> dict[str, object]:
             "target_files": target_files_list,
             "proposed_patch": proposed_patch,
             "head_branch": fix_branch,
+            "base_branch": base_branch,
+            "owner": owner,
+            "repo": repo,
         },
     }
