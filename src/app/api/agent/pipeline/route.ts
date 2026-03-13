@@ -22,10 +22,16 @@ import {
 } from "@/lib/notifications/slack";
 
 export async function POST(request: NextRequest) {
-    let owner = "";
-    let repo = "";
-    let branch = "main";
-    let target_url = "";
+    // Defaults from env, can be overridden by request body
+    const envOwner = process.env.SENTINELQA_DEFAULT_OWNER ?? "";
+    const envRepo = process.env.SENTINELQA_DEFAULT_REPO ?? "";
+    const envBranch = process.env.SENTINELQA_DEFAULT_BRANCH ?? "main";
+    const envTargetUrl = process.env.SENTINELQA_TARGET_URL ?? "";
+
+    let owner = envOwner;
+    let repo = envRepo;
+    let branch = envBranch;
+    let target_url = envTargetUrl;
     let slackChannel: string | undefined;
     let body: Record<string, unknown> = {};
 
@@ -39,20 +45,21 @@ export async function POST(request: NextRequest) {
             );
         }
 
-        ({
-            owner,
-            repo,
-            branch = "main",
-            target_url,
-        } = body as { owner: string; repo: string; branch?: string; target_url: string });
-
         const {
+            owner: bodyOwner,
+            repo: bodyRepo,
+            branch: bodyBranch,
+            target_url: bodyTargetUrl,
             github_token,
-            github_mcp_mode = "docker",
+            github_mcp_mode = "npx",
             selected_pr,
             slack_channel,
             session_id,
         } = body as {
+            owner?: string;
+            repo?: string;
+            branch?: string;
+            target_url?: string;
             github_token?: string;
             github_mcp_mode?: "docker" | "npx";
             selected_pr?: { number?: number; title?: string; url?: string };
@@ -60,11 +67,17 @@ export async function POST(request: NextRequest) {
             session_id?: string;
         };
 
+        // Apply overrides from body if present
+        if (bodyOwner) owner = bodyOwner;
+        if (bodyRepo) repo = bodyRepo;
+        if (bodyBranch) branch = bodyBranch;
+        if (bodyTargetUrl) target_url = bodyTargetUrl;
+
         slackChannel = slack_channel?.trim() || undefined;
 
         if (!owner || !repo || !target_url) {
             return NextResponse.json(
-                { error: "Missing required fields: owner, repo, target_url" },
+                { error: "Missing required fields: owner, repo, target_url (set in .env or request body)" },
                 { status: 400 }
             );
         }

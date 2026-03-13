@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
+import { useSession } from "next-auth/react";
 import { Button } from "@/components/ui/button";
 import { Play, ArrowRight, MousePointer2 } from "lucide-react";
 import Link from "next/link";
@@ -265,6 +266,9 @@ function BrowserMockup() {
 }
 
 export default function HeroSection() {
+  const { status } = useSession();
+  const ctaHref = status === "authenticated" ? "/dashboard" : "/auth";
+
   return (
     <section className="relative z-10 pt-28 pb-20 px-6">
       <div className="max-w-7xl mx-auto">
@@ -296,7 +300,7 @@ export default function HeroSection() {
               className="glow-cyan bg-primary text-primary-foreground hover:bg-primary/90 font-semibold gap-2"
               asChild
             >
-              <Link href="/auth">
+              <Link href={ctaHref}>
                 <Play className="w-4 h-4" /> Start Testing
               </Link>
             </Button>

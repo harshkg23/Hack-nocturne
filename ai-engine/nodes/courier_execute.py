@@ -3,10 +3,7 @@ from __future__ import annotations
 import json
 import os
 import socket
-import subprocess
-import tempfile
 from pathlib import Path
-from typing import Any
 from urllib import error, request
 
 from dotenv import load_dotenv
@@ -35,87 +32,9 @@ def courier_execute_node(state: SentinelState) -> dict[str, object]:
     if not isinstance(dispatch_payload, dict):
         raise ValueError("state.dispatch_payload must be a dict before courier_execute step")
 
-    # If action is PR, we must apply the patch, commit, and push branch first
-    if dispatch_action == "create_pr":
-        head_branch = dispatch_payload.get("head_branch")
-        proposed_patch = dispatch_payload.get("proposed_patch")
-
-        if head_branch and proposed_patch:
-            repo_root = Path(__file__).resolve().parents[2]
-            patch_path = ""
-            try:
-                # 1. Checkout new branch
-                subprocess.run(["git", "checkout", "-b", head_branch], cwd=repo_root, check=True, capture_output=True)
-
-                # 2. Write patch to temp file
-                with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".diff", encoding="utf-8") as f:
-                    f.write(proposed_patch)
-                    patch_path = f.name
-
-                # 3. Check patch applicability without modifying the working tree
-                check_res = subprocess.run(
-                    ["git", "apply", "--check", patch_path],
-                    cwd=repo_root,
-                    capture_output=True,
-                    text=True,
-                )
-                
-                if check_res.returncode != 0:
-                    # Patch failed to apply cleanly in dry run. Fall back to issue.
-                    dispatch_action = "create_issue"
-                    dispatch_payload["title"] = "[Failed to Apply Patch] " + dispatch_payload.get("title", "")
-                    dispatch_payload["body"] = (
-                        "**Note**: The Healer generated a patch but it failed to apply cleanly.\n"
-                        f"```\n{check_res.stderr}\n```\n\n"
-                        f"{dispatch_payload.get('body', '')}"
-                    )
-                    state["dispatch_action"] = dispatch_action
-                    state["dispatch_payload"] = dispatch_payload
-                else:
-                    # 4. Apply patch for real
-                    apply_res = subprocess.run(
-                        ["git", "apply", patch_path],
-                        cwd=repo_root,
-                        capture_output=True,
-                        text=True,
-                        check=True,
-                    )
-                    # 5. Stage and commit all resulting changes, if any
-                    status_res = subprocess.run(
-                        ["git", "status", "--porcelain"],
-                        cwd=repo_root,
-                        capture_output=True,
-                        text=True,
-                        check=True,
-                    )
-                    if status_res.stdout.strip():
-                        subprocess.run(["git", "add", "-A"], cwd=repo_root, check=True)
-                        session_id = dispatch_payload.get("session_id", "unknown")
-                        subprocess.run(
-                            ["git", "commit", "-m", f"[SentinelQA] Auto-fix for {session_id}"],
-                            cwd=repo_root,
-                            check=True,
-                        )
-                    # 6. Push branch
-                    subprocess.run(
-                        ["git", "push", "-u", "origin", head_branch],
-                        cwd=repo_root,
-                        check=True,
-                    )
-            except Exception as e:
-                # Any git error falls back to issue
-                dispatch_action = "create_issue"
-                dispatch_payload["title"] = "[Git Error] " + dispatch_payload.get("title", "")
-                dispatch_payload["body"] = f"**Note**: Local git branch or push failed.\n```\n{e}\n```\n\n{dispatch_payload.get('body', '')}"
-                state["dispatch_action"] = dispatch_action
-                state["dispatch_payload"] = dispatch_payload
-            finally:
-                if patch_path and os.path.exists(patch_path):
-                    try:
-                        os.remove(patch_path)
-                    except Exception:
-                        pass
-
+    # Patch application and branch push are handled by the Next.js Courier API,
+    # which clones the target repo, applies the patch, and pushes. We only
+    # forward the payload here.
     req = request.Request(
         url=f"{_backend_url()}/api/agent/courier",
         data=json.dumps(

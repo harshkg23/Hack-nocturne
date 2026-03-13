@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-from sentinel.graph import build_phase1_graph
+from sentinel.graph import build_phase1_graph, build_healer_graph
 from sentinel.state import SentinelState
 
 load_dotenv()
@@ -23,8 +23,9 @@ app = FastAPI(
     description="LangGraph-powered test generation and analysis service",
 )
 
-# Compile the graph once at startup — reused for every request
+# Compile graphs once at startup — reused for every request
 _phase1_graph = build_phase1_graph()
+_healer_graph = build_healer_graph()
 
 # ── Request/Response Models ─────────────────────────────────────────────────
 
@@ -53,6 +54,39 @@ class AnalyzeFailureResponse(BaseModel):
     rca_report: str
     proposed_fix: str
     confidence: float
+
+
+class RunPipelineRequest(BaseModel):
+    repo_url: str
+    changed_files: list[str] = []
+    target_url: str
+    branch: str | None = "main"
+    commit_sha: str | None = None
+    git_diff: str | None = None
+    # Pre-supply test results so the full graph (Healer → Courier) runs
+    test_results: list[dict[str, Any]] | None = None
+    session_id: str | None = None
+    force_mock: bool = False
+    force_mock_tests: bool = False
+    simulate_all_pass: bool = False
+
+
+class RunPipelineResponse(BaseModel):
+    session_id: str
+    decision: str
+    test_plan: str
+    test_results: list[dict[str, Any]]
+    rca_type: str | None = None
+    rca_report: str | None = None
+    proposed_fix: str | None = None
+    proposed_patch: str | None = None
+    confidence_score: float | None = None
+    fix_branch: str | None = None
+    target_files: list[str] | None = None
+    dispatch_action: str | None = None
+    dispatch_result_type: str | None = None
+    dispatch_result_url: str | None = None
+    dispatch_result_number: int | None = None
 
 
 # ── Endpoints ───────────────────────────────────────────────────────────────
@@ -120,6 +154,63 @@ async def generate_test_plan(request: GenerateTestPlanRequest):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Graph execution failed: {e}")
+
+
+@app.post("/run-pipeline", response_model=RunPipelineResponse)
+async def run_pipeline(request: RunPipelineRequest):
+    """
+    Run the full LangGraph pipeline:
+      Architect → run_tests → decision → [Healer → courier_decision → courier_execute]
+
+    If test_results are pre-supplied (e.g. already run by Playwright MCP on the
+    Next.js side), the graph skips re-running tests and goes straight to decision
+    → Healer → Courier.
+    """
+    try:
+        from uuid import uuid4
+
+        initial_state: SentinelState = {
+            "repo_url": request.repo_url,
+            "changed_files": request.changed_files,
+            "target_url": request.target_url,
+            "git_diff": request.git_diff or "",
+            "session_id": request.session_id or f"pipeline_{uuid4().hex}",
+            "branch": request.branch or "main",
+            "force_mock": request.force_mock,
+            "force_mock_tests": request.force_mock_tests,
+            "simulate_all_pass": request.simulate_all_pass,
+        }
+
+        if request.test_results is not None:
+            # Test results pre-supplied → skip architect + run_tests,
+            # go straight to decision → healer → courier
+            initial_state["test_results"] = request.test_results
+            graph = _healer_graph
+        else:
+            graph = _phase1_graph
+
+        result = graph.invoke(initial_state)
+
+        return RunPipelineResponse(
+            session_id=str(result.get("session_id", "")),
+            decision=str(result.get("decision", "")),
+            test_plan=str(result.get("test_plan", "")),
+            test_results=result.get("test_results") or [],
+            rca_type=result.get("rca_type"),
+            rca_report=result.get("rca_report"),
+            proposed_fix=result.get("proposed_fix"),
+            proposed_patch=result.get("proposed_patch"),
+            confidence_score=result.get("confidence_score"),
+            fix_branch=result.get("fix_branch"),
+            target_files=result.get("target_files"),
+            dispatch_action=result.get("dispatch_action"),
+            dispatch_result_type=result.get("dispatch_result_type"),
+            dispatch_result_url=result.get("dispatch_result_url"),
+            dispatch_result_number=result.get("dispatch_result_number"),
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Pipeline execution failed: {e}")
 
 
 @app.post("/analyze-failure", response_model=AnalyzeFailureResponse)
