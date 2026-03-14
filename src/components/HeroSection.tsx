@@ -7,23 +7,25 @@ import { Button } from "@/components/ui/button";
 import { Play, ArrowRight, MousePointer2 } from "lucide-react";
 import Link from "next/link";
 
-const codeLines = [
-  { text: "import { test, expect } from '@playwright/test';", delay: 0 },
-  { text: "", delay: 800 },
-  {
-    text: "test('login flow works correctly', async ({ page }) => {",
-    delay: 1200,
-  },
-  { text: "  await page.goto('https://app.sentinel.qa');", delay: 2000 },
-  { text: "  await page.fill('#email', 'agent@sentinel.qa');", delay: 2800 },
-  { text: "  await page.fill('#password', '••••••••');", delay: 3600 },
-  { text: "  await page.click('button[type=\"submit\"]');", delay: 4400 },
-  {
-    text: "  await expect(page.locator('.dashboard')).toBeVisible();",
-    delay: 5400,
-  },
-  { text: "  // ✓ Test passed — 1.2s", delay: 6400 },
-  { text: "});", delay: 7000 },
+const terminalLogs: { text: string; type: "system" | "agent" | "success" | "error" | "warn" | "info"; delay: number }[] = [
+  { text: "SentinelQA v1.0 — pipeline triggered", type: "system", delay: 0 },
+  { text: "Push detected: feat/checkout-v2 → main", type: "info", delay: 600 },
+  { text: "[ARCHITECT] Connecting to GitHub MCP...", type: "agent", delay: 1200 },
+  { text: "[ARCHITECT] Analyzing 847 files across 12 modules", type: "agent", delay: 2000 },
+  { text: "[ARCHITECT] ✓ Test plan ready — 14 scenarios", type: "success", delay: 2800 },
+  { text: "[SCRIPTER] Launching headless Chromium via Playwright", type: "agent", delay: 3400 },
+  { text: "  ✓ test('renders login form') — 0.3s", type: "success", delay: 4000 },
+  { text: "  ✓ test('accepts valid credentials') — 1.2s", type: "success", delay: 4500 },
+  { text: "  ✓ test('redirects to dashboard') — 0.8s", type: "success", delay: 5000 },
+  { text: "  ✗ test('completes checkout flow') — FAILED", type: "error", delay: 5600 },
+  { text: '  Error: Locator(".checkout-btn") not found', type: "error", delay: 6000 },
+  { text: "[WATCHDOG] Anomaly detected — DOM mutation logged", type: "warn", delay: 6600 },
+  { text: "[HEALER] RCA: CSS selector regression in commit a3f9c2b", type: "agent", delay: 7200 },
+  { text: "[HEALER] Fix: .checkout-btn → [data-testid='checkout']", type: "success", delay: 7800 },
+  { text: "[HEALER] Confidence: 94% ✓", type: "success", delay: 8200 },
+  { text: "[COURIER] PR #47 created — auto-fix pushed", type: "agent", delay: 8800 },
+  { text: "[COURIER] ✓ Slack notification sent to #dev-alerts", type: "success", delay: 9400 },
+  { text: "Pipeline complete — 13/14 passed | 1 healed | MTTR: 28s", type: "system", delay: 10000 },
 ];
 
 const browserSteps = [
@@ -36,49 +38,37 @@ const browserSteps = [
   { step: "passed", at: 6400 },
 ];
 
-function TypewriterCode() {
-  const [visibleLines, setVisibleLines] = useState<number>(0);
-  const [currentChars, setCurrentChars] = useState<number>(0);
-  const intervalRef = useRef<NodeJS.Timeout | null>(null);
+const logColorMap: Record<string, string> = {
+  system: "text-primary font-semibold",
+  agent: "text-cyan-400",
+  success: "text-emerald-400",
+  error: "text-red-400",
+  warn: "text-amber-400",
+  info: "text-foreground/70",
+};
+
+function TerminalLogs() {
+  const [visibleCount, setVisibleCount] = useState(0);
 
   useEffect(() => {
-    let lineIndex = 0;
-    let charIndex = 0;
+    const timeouts = terminalLogs.map((log, i) =>
+      setTimeout(() => setVisibleCount(i + 1), log.delay + 800),
+    );
 
-    const type = () => {
-      if (lineIndex >= codeLines.length) {
-        // Reset after a pause
-        setTimeout(() => {
-          setVisibleLines(0);
-          setCurrentChars(0);
-          lineIndex = 0;
-          charIndex = 0;
-        }, 3000);
-        return;
-      }
+    const resetTimeout = setTimeout(() => {
+      setVisibleCount(0);
+    }, terminalLogs[terminalLogs.length - 1].delay + 4000);
 
-      const currentLine = codeLines[lineIndex].text;
-      if (charIndex <= currentLine.length) {
-        setVisibleLines(lineIndex);
-        setCurrentChars(charIndex);
-        charIndex++;
-        intervalRef.current = setTimeout(type, 25 + Math.random() * 35);
-      } else {
-        lineIndex++;
-        charIndex = 0;
-        intervalRef.current = setTimeout(type, 200);
-      }
-    };
-
-    intervalRef.current = setTimeout(type, 1000);
     return () => {
-      if (intervalRef.current) clearTimeout(intervalRef.current);
+      timeouts.forEach(clearTimeout);
+      clearTimeout(resetTimeout);
     };
-  }, []);
+  }, [visibleCount === 0]);
+
+
 
   return (
     <div className="glass rounded-xl overflow-hidden neon-border">
-      {/* Editor header */}
       <div className="flex items-center gap-2 px-4 py-2.5 border-b border-border/50">
         <div className="flex gap-1.5">
           <div className="w-3 h-3 rounded-full bg-destructive/60" />
@@ -86,35 +76,31 @@ function TypewriterCode() {
           <div className="w-3 h-3 rounded-full bg-secondary/60" />
         </div>
         <span className="text-xs text-muted-foreground font-mono ml-2">
-          login.spec.ts
+          sentinel-qa — pipeline
         </span>
+        <div className="ml-auto flex items-center gap-1.5">
+          <span className="w-1.5 h-1.5 rounded-full bg-secondary animate-pulse" />
+          <span className="text-[10px] text-secondary font-medium">Live</span>
+        </div>
       </div>
-      {/* Code area */}
-      <div className="p-4 font-mono text-xs sm:text-sm leading-relaxed min-h-[280px]">
-        {codeLines.map((line, i) => {
-          if (i > visibleLines) return null;
-          const text =
-            i === visibleLines ? line.text.slice(0, currentChars) : line.text;
-          const isComment = text.trimStart().startsWith("//");
-          return (
-            <div key={i} className="flex">
-              <span className="text-muted-foreground/40 select-none w-6 text-right mr-3 shrink-0">
-                {i + 1}
-              </span>
-              <span
-                className={isComment ? "text-secondary" : "text-foreground/90"}
-              >
-                {text}
-                {i === visibleLines && (
-                  <span
-                    className="inline-block w-[2px] h-4 bg-primary ml-0.5 align-middle"
-                    style={{ animation: "typing-cursor 1s infinite" }}
-                  />
-                )}
-              </span>
-            </div>
-          );
-        })}
+      <div className="p-4 font-mono text-[11px] sm:text-xs leading-relaxed min-h-[280px] max-h-[280px] overflow-y-auto bg-black/20">
+        {visibleCount === 0 && (
+          <p className="text-muted-foreground/30 text-xs">Awaiting pipeline trigger...</p>
+        )}
+        {terminalLogs.slice(0, visibleCount).map((log, i) => (
+          <motion.div
+            key={i}
+            initial={{ opacity: 0, x: 8 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ duration: 0.2 }}
+            className="flex gap-2 mb-0.5"
+          >
+            <span className="text-muted-foreground/30 shrink-0 select-none tabular-nums">
+              {String(i + 1).padStart(2, "0")}
+            </span>
+            <span className={logColorMap[log.type]}>{log.text}</span>
+          </motion.div>
+        ))}
       </div>
     </div>
   );
@@ -286,13 +272,13 @@ export default function HeroSection() {
             </span>
           </div>
           <h1 className="text-4xl sm:text-5xl lg:text-7xl font-black tracking-tight mb-4">
-            <span className="text-gradient-cyan">Autonomous</span>
+            <span className="text-gradient-cyan">Automated QA</span>
             <br />
-            <span className="text-foreground">Quality Engineering</span>
+            <span className="text-foreground">&amp; Automated Deployment</span>
           </h1>
           <p className="text-lg text-muted-foreground max-w-2xl mx-auto mb-8">
-            AI agents that write, heal, and observe your tests in real-time.
-            Zero maintenance. Infinite coverage.
+            AI agents that autonomously test, heal, and deploy your code.
+            From automated QA to seamless canary deployments — zero maintenance, infinite coverage.
           </p>
           <div className="flex items-center justify-center gap-4">
             <Button
@@ -321,7 +307,7 @@ export default function HeroSection() {
           transition={{ duration: 1, delay: 0.3 }}
           className="grid md:grid-cols-2 gap-4 max-w-5xl mx-auto"
         >
-          <TypewriterCode />
+          <TerminalLogs />
           <BrowserMockup />
         </motion.div>
       </div>
